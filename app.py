@@ -1,6 +1,6 @@
 import os
 import time
-import requests 
+import requests
 from flask import Flask, request
 
 app = Flask(__name__)
@@ -41,9 +41,16 @@ def digiseller_webhook():
         merged = {**args_data, **form_data, **data}
         print(f"INCOMING WEBHOOK DATA: {merged}", flush=True)
 
+        # Ignore empty test pings from Digiseller
+        if not merged:
+            return "Webhook active / OK", 200
+
         order_id = merged.get('ID_I') or merged.get('inv_id') or merged.get('order_id') or '—'
         product_id = str(merged.get('ID_D') or merged.get('product_id') or '—')
         email = merged.get('Email') or merged.get('email') or '—'
+
+        if product_id == '—':
+            return "Ignored: No product ID", 200
 
         # Dynamically read the purchase quantity from Digiseller (defaults to 1)
         raw_qty = merged.get('cnt') or merged.get('quantity') or merged.get('amount') or 1
