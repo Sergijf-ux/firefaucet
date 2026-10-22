@@ -34,27 +34,35 @@ def send_telegram(text):
 @app.route('/webhook', methods=['POST', 'GET'])
 def digiseller_webhook():
     try:
-        data = request.get_json(silent=True) or {}
-        form_data = request.form.to_dict() or {}
-        args_data = request.args.to_dict() or {}
+        raw_body = request.get_data(as_text=True)
+        args_data = request.args.to_dict()
+        form_data = request.form.to_dict()
+        json_data = request.get_json(silent=True, force=True) or {}
+        values_data = request.values.to_dict()
         
-        merged = {**args_data, **form_data, **data}
-        print(f"INCOMING WEBHOOK DATA: {merged}", flush=True)
+        print(f"--- RAW WEBHOOK START ---", flush=True)
+        print(f"RAW BODY: {raw_body}", flush=True)
+        print(f"ARGS: {args_data}", flush=True)
+        print(f"FORM: {form_data}", flush=True)
+        print(f"JSON: {json_data}", flush=True)
+        print(f"--- RAW WEBHOOK END ---", flush=True)
+        
+        merged = {**args_data, **form_data, **json_data, **values_data}
 
-        # Ignore empty test pings from Digiseller
-        if not merged:
+        if not merged and not raw_body:
             return "Webhook active / OK", 200
 
-        # Support both uppercase and lowercase keys from Digiseller
-        order_id = merged.get('ID_I') or merged.get('id_i') or merged.get('inv_id') or merged.get('order_id') or '—'
-        product_id = str(merged.get('ID_D') or merged.get('id_d') or merged.get('product_id') or '—')
+        order_id = merged.get('ID_I') or merged.get('id_i') or merged.get('inv_id') or merged.get('order_id') or merged.get('inv') or '—'
+        product_id = str(merged.get('ID_D') or merged.get('id_d') or merged.get('id_goods') or merged.get('goods_id') or merged.get('product_id') or '—')
         email = merged.get('Email') or merged.get('email') or '—'
 
-        if product_id == '—':
-            return "Ignored: No product ID", 200
+        if product_id == '—' and '6223586' in raw_body:
+            product_id = '6223586'
 
-        # Dynamically read the purchase quantity from Digiseller (defaults to 1)
-        raw_qty = merged.get('cnt') or merged.get('quantity') or merged.get('amount') or 1
+        if product_id == '—':
+            return f"Ignored: No product ID. Raw: {raw_body}", 200
+
+        raw_qty = merged.get('cnt') or merged.get('quantity') or merged.get('amount') or merged.get('qty') or 1
         try:
             req_quantity = int(raw_qty)
         except ValueError:
@@ -66,13 +74,13 @@ def digiseller_webhook():
             mapping = PRODUCT_MAPPING.get(product_id)
             if not mapping:
                 print(f"Error: No mapping found for Digiseller product ID {product_id}!")
+                send_telegram(f"⚠️ <b>MAPPING ERROR!</b>\nProduct ID: <code>{product_id}</code> not found in bot mapping!")
             else:
                 headers = {
                     "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
                     "Content-Type": "application/json"
                 }
                 
-                # STEP 1: Check current price and available stock
                 cat_url = f"https://resell.codes/api/v1/gift-cards/categories/{mapping['category_id']}/cards"
                 cat_resp = requests.get(cat_url, headers=headers, timeout=10)
                 
@@ -81,14 +89,13 @@ def digiseller_webhook():
                 if cat_resp.status_code == 200:
                     offers = cat_resp.json().get('offers', [])
                     for offer in offers:
-                        if offer.get('card_id') == mapping['card_id']:  # <-- Виправлено дужку тут
+                        if offer.get('card_id') == mapping['card_id']:
                             current_price = float(offer.get('price_usd', 0))
                             available_stock = int(offer.get('stock', 0))
                             break
                 
-                max_allowed = mapping.get("max_price", 1.05)
+                max_allowed = mapping.get("max_price", 0.95)
                 
-                # Check if stock is sufficient
                 if available_stock < req_quantity:
                     stock_msg = (
                         f"⚠️ <b>STOCK SHORTAGE BLOCK!</b>\n\n"
@@ -100,7 +107,6 @@ def digiseller_webhook():
                     send_telegram(stock_msg)
                     return "Stock short / Not enough items", 200
 
-                # Check max price limit per unit
                 if current_price > max_allowed:
                     price_msg = (
                         f"⚠️ <b>PRICE LIMIT EXCEEDED BLOCK!</b>\n\n"
@@ -112,7 +118,6 @@ def digiseller_webhook():
                     send_telegram(price_msg)
                     return "Price exceeds limit", 200
 
-                # STEP 2: Place order for exact quantity via Resell.codes API
                 rsc_url = "https://resell.codes/api/v1/gift-cards/order"
                 payload = {
                     "category_id": mapping["category_id"],
@@ -129,7 +134,6 @@ def digiseller_webhook():
                     if codes:
                         issued_codes = codes
                     elif rsc_order_number:
-                        # STEP 3: Poll order status by order number
                         for _ in range(6):
                             time.sleep(3)
                             status_url = f"https://resell.codes/api/v1/orders/{rsc_order_number}"
@@ -160,6 +164,7 @@ def digiseller_webhook():
             send_telegram(msg)
             return final_output_text, 200
         else:
+            send_telegram(f"❌ <b>ORDER FAILED / NO CODES!</b>\nProduct ID: <code>{product_id}</code>\nOrder: <code>{order_id}</code>")
             return "Error issuing codes or insufficient balance.", 200
 
     except Exception as e:
