@@ -11,12 +11,11 @@ TELEGRAM_BOT_TOKEN = "8807171182:AAEewfuvrhwHYRE0N3Xc7_IjGUpFsL_TgqY"
 TELEGRAM_CHAT_ID = "8508676381"
 RESELL_CODES_API_KEY = "rsc_live_b61d7b4894461371f7ed9b636752c35ac703a6d5c4625cda"
 
-# Product mapping and price limit (max_price per 1 unit)
+# Product mapping
 PRODUCT_MAPPING = {
     "6223586": {
         "category_id": "roblox",
-        "card_id": "50_robux",
-        "max_price": 0.95  # Max price limit per 1 unit
+        "card_id": "50_robux"
     }
 }
 
@@ -42,17 +41,10 @@ def digiseller_webhook():
         json_data = request.get_json(silent=True, force=True) or {}
         values_data = request.values.to_dict()
         
-        print(f"--- RAW WEBHOOK START ---", flush=True)
-        print(f"RAW BODY: {raw_body}", flush=True)
-        print(f"ARGS: {args_data}", flush=True)
-        print(f"FORM: {form_data}", flush=True)
-        print(f"JSON: {json_data}", flush=True)
-        print(f"--- RAW WEBHOOK END ---", flush=True)
-        
         merged = {**args_data, **form_data, **json_data, **values_data}
 
         order_id = merged.get('ID_I') or merged.get('id_i') or merged.get('inv_id') or merged.get('order_id') or merged.get('inv') or 'manual_check'
-        product_id = str(merged.get('ID_D') or merged.get('id_d') or merged.get('id_goods') or merged.get('goods_id') or merged.get('product_id') or '—')
+        product_id = str(merged.get('ID_D') or merged.get('id_d') or merged.get('id_goods') or merged.get('goods_id') or merged.get('product_id') or '6223586')
         email = merged.get('Email') or merged.get('email') or '—'
 
         if product_id == '—':
@@ -69,64 +61,46 @@ def digiseller_webhook():
         try:
             mapping = PRODUCT_MAPPING.get(product_id)
             if not mapping:
-                print(f"Error: No mapping found for Digiseller product ID {product_id}!")
+                mapping = PRODUCT_MAPPING["6223586"] # Запобіжник для нашого товару
+
+            headers = {
+                "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            
+            # Одразу робимо запит на покупку без блокувань залишків
+            rsc_url = "https://resell.codes/api/v1/gift-cards/order"
+            payload = {
+                "category_id": mapping["category_id"],
+                "card_id": mapping["card_id"],
+                "quantity": req_quantity
+            }
+            
+            response = requests.post(rsc_url, json=payload, headers=headers, timeout=15)
+            print(f"Resell.codes Response Status: {response.status_code}, Body: {response.text}", flush=True)
+            
+            if response.status_code == 200:
+                resp_data = response.json()
+                rsc_order_number = resp_data.get('number')
+                
+                codes = resp_data.get('codes', []) or resp_data.get('keys', [])
+                if codes:
+                    issued_codes = codes
+                elif rsc_order_number:
+                    for _ in range(6):
+                        time.sleep(3)
+                        status_url = f"https://resell.codes/api/v1/orders/{rsc_order_number}"
+                        status_resp = requests.get(status_url, headers=headers, timeout=10)
+                        if status_resp.status_code == 200:
+                            order_data = status_resp.json()
+                            fetched_codes = order_data.get('codes', []) or order_data.get('keys', [])
+                            if fetched_codes:
+                                issued_codes = fetched_codes
+                                break
+                            if order_data.get('status') == 'completed':
+                                break
             else:
-                headers = {
-                    "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
-                    "Content-Type": "application/json"
-                }
-                
-                cat_url = f"https://resell.codes/api/v1/gift-cards/categories/{mapping['category_id']}/cards"
-                cat_resp = requests.get(cat_url, headers=headers, timeout=10)
-                
-                current_price = 0.0
-                available_stock = 0
-                if cat_resp.status_code == 200:
-                    offers = cat_resp.json().get('offers', [])
-                    for offer in offers:
-                        if offer.get('card_id') == mapping['card_id']:  # Виправлено дужку
-                            current_price = float(offer.get('price_usd', 0))
-                            available_stock = int(offer.get('stock', 0))
-                            break
-                
-                max_allowed = mapping.get("max_price", 0.95)
-                
-                if available_stock < req_quantity:
-                    send_telegram(f"⚠️ <b>STOCK SHORTAGE!</b> Order: {order_id}")
-                    return "Stock short", 200
-
-                if current_price > max_allowed:
-                    send_telegram(f"⚠️ <b>PRICE EXCEEDED!</b> Price: {current_price}")
-                    return "Price exceeds limit", 200
-
-                rsc_url = "https://resell.codes/api/v1/gift-cards/order"
-                payload = {
-                    "category_id": mapping["category_id"],
-                    "card_id": mapping["card_id"],
-                    "quantity": req_quantity
-                }
-                
-                response = requests.post(rsc_url, json=payload, headers=headers, timeout=15)
-                if response.status_code == 200:
-                    resp_data = response.json()
-                    rsc_order_number = resp_data.get('number')
-                    
-                    codes = resp_data.get('codes', []) or resp_data.get('keys', [])
-                    if codes:
-                        issued_codes = codes
-                    elif rsc_order_number:
-                        for _ in range(6):
-                            time.sleep(3)
-                            status_url = f"https://resell.codes/api/v1/orders/{rsc_order_number}"
-                            status_resp = requests.get(status_url, headers=headers, timeout=10)
-                            if status_resp.status_code == 200:
-                                order_data = status_resp.json()
-                                fetched_codes = order_data.get('codes', []) or order_data.get('keys', [])
-                                if fetched_codes:
-                                    issued_codes = fetched_codes
-                                    break
-                                if order_data.get('status') == 'completed':
-                                    break
+                send_telegram(f"❌ <b>API Error:</b> {response.text}")
         except Exception as err:
             print(f"Purchase error: {err}")
 
@@ -152,7 +126,6 @@ def digiseller_webhook():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
-
 
 
 
