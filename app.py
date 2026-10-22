@@ -11,14 +11,6 @@ TELEGRAM_BOT_TOKEN = "8807171182:AAEewfuvrhwHYRE0N3Xc7_IjGUpFsL_TgqY"
 TELEGRAM_CHAT_ID = "8508676381"
 RESELL_CODES_API_KEY = "rsc_live_b61d7b4894461371f7ed9b636752c35ac703a6d5c4625cda"
 
-# Product mapping
-PRODUCT_MAPPING = {
-    "6223586": {
-        "category_id": "roblox",
-        "card_id": "50_robux"
-    }
-}
-
 @app.route('/')
 def home():
     return "Bot is running on Render!", 200
@@ -59,22 +51,54 @@ def digiseller_webhook():
         issued_codes = []
         
         try:
-            mapping = PRODUCT_MAPPING.get(product_id)
-            if not mapping:
-                mapping = PRODUCT_MAPPING["6223586"]
-
             headers = {
                 "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
                 "Content-Type": "application/json"
             }
             
-            # Виправляємо формат payload, дублюючи ключі для сумісності з різними версіями їхнього API
+            # КРОК 1: Динамічно отримуємо список категорій від API
+            cat_list_url = "https://resell.codes/api/v1/gift-cards/categories"
+            cat_resp = requests.get(cat_list_url, headers=headers, timeout=10)
+            
+            target_category = None
+            target_card_id = None
+            
+            if cat_resp.status_code == 200:
+                categories = cat_resp.json().get('categories', []) or cat_resp.json().get('data', []) or cat_resp.json()
+                for cat in categories:
+                    cat_name = str(cat.get('name', '')).lower()
+                    cat_slug = str(cat.get('slug', '')).lower()
+                    cat_id = cat.get('id') or cat.get('category_id')
+                    
+                    if 'roblox' in cat_name or 'roblox' in cat_slug or str(cat_id) == 'roblox':
+                        target_category = cat_id or cat_slug
+                        
+                        # Отримуємо список карток всередині знайденої категорії
+                        cards_url = f"https://resell.codes/api/v1/gift-cards/categories/{target_category}/cards"
+                        cards_resp = requests.get(cards_url, headers=headers, timeout=10)
+                        if cards_resp.status_code == 200:
+                            offers = cards_resp.json().get('offers', []) or cards_resp.json().get('cards', [])
+                            for offer in offers:
+                                offer_title = str(offer.get('title', '')).lower()
+                                offer_card_id = offer.get('card_id') or offer.get('id')
+                                if '50' in offer_title and 'robux' in offer_title:
+                                    target_card_id = offer_card_id
+                                    break
+                        break
+            
+            # Резервні значення, якщо динамічний пошук не спрацює
+            if not target_category:
+                target_category = "roblox"
+            if not target_card_id:
+                target_card_id = "50_robux"
+
+            print(f"Dynamic API Resolved -> Category: {target_category}, Card: {target_card_id}", flush=True)
+
+            # КРОК 2: Відправляємо замовлення з реальними ID
             rsc_url = "https://resell.codes/api/v1/gift-cards/order"
             payload = {
-                "category_id": mapping["category_id"],
-                "category": mapping["category_id"],
-                "card_id": mapping["card_id"],
-                "card": mapping["card_id"],
+                "category_id": target_category,
+                "card_id": target_card_id,
                 "quantity": req_quantity
             }
             
@@ -128,7 +152,6 @@ def digiseller_webhook():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
-
 
 
 
