@@ -5,17 +5,15 @@ from flask import Flask, request
 
 app = Flask(__name__)
 
-# --- НАЛАШТУВАННЯ ---
 TELEGRAM_BOT_TOKEN = "8807171182:AAEewfuvrhwHYRE0N3Xc7_IjGUpFsL_TgqY"
 TELEGRAM_CHAT_ID = "8508676381"
 RESELL_CODES_API_KEY = "rsc_live_b61d7b4894461371f7ed9b636752c35ac703a6d5c4625cda"
 
-# Мапінг товарів та ліміт ціни (max_price)
 PRODUCT_MAPPING = {
     "6223586": {
         "category_id": "roblox",
         "card_id": "50_robux",
-        "max_price": 0.95  # Максимально допустима ціна за 1 шт.
+        "max_price": 0.95
     }
 }
 
@@ -41,11 +39,10 @@ def digiseller_webhook():
         merged = {**args_data, **form_data, **data}
         print(f"INCOMING WEBHOOK DATA: {merged}", flush=True)
 
-        order_id = merged.get('ID_I') or merged.get('inv_id') or merged.get('order_id')  or '—'
+        order_id = merged.get('ID_I') or merged.get('inv_id') or merged.get('order_id') or '—'
         product_id = str(merged.get('ID_D') or merged.get('product_id') or '—')
         email = merged.get('Email') or merged.get('email') or '—'
 
-        # Динамічно зчитуємо кількість із замовлення Digiseller (за замовчуванням 1)
         raw_qty = merged.get('cnt') or merged.get('quantity') or merged.get('amount') or 1
         try:
             req_quantity = int(raw_qty)
@@ -57,14 +54,13 @@ def digiseller_webhook():
         try:
             mapping = PRODUCT_MAPPING.get(product_id)
             if not mapping:
-                print(f"Помилка: Для товару Digiseller ID {product_id} не знайдено мапінгу в PRODUCT_MAPPING!")
+                print(f"Помилка: Для товару ID {product_id} не знайдено зіставлення!")
             else:
                 headers = {
                     "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
                     "Content-Type": "application/json"
                 }
                 
-                # КРОК 1: Отримуємо каталог для перевірки ціни та поточного залишку (stock)
                 cat_url = f"https://resell.codes/api/v1/gift-cards/categories/{mapping['category_id']}/cards"
                 cat_resp = requests.get(cat_url, headers=headers, timeout=10)
                 
@@ -80,31 +76,16 @@ def digiseller_webhook():
                 
                 max_allowed = mapping.get("max_price", 0.95)
                 
-                # Перевірка 1: Чи достатньо товару на складі для цього замовлення
                 if available_stock < req_quantity:
-                    stock_msg = (
-                        f"⚠️ <b>БЛОКУВАННЯ: НЕДОСТАТНЬО ТОВАРУ НА СКЛАДІ!</b>\n\n"
-                        f"📦 <b>Товар:</b> <code>{mapping['card_id']}</code>\n"
-                        f"📉 <b>Залишок на складі:</b> {available_stock} шт.\n"
-                        f"🛒 <b>Покупка вимагає:</b> {req_quantity} шт.\n"
-                        f"🆔 <b>Замовлення Digiseller:</b> <code>{order_id}</code>"
-                    )
+                    stock_msg = f"⚠️ НЕДОСТАТНЬО ТОВАРУ НА СКЛАДІ!\nТовар: {mapping['card_id']}\nЗалишок: {available_stock}\nПотрібно: {req_quantity}"
                     send_telegram(stock_msg)
-                    return "Stock short / Not enough items", 200
+                    return "Stock short", 200
 
-                # Перевірка 2: Чи не перевищує ціна ліміт
                 if current_price > max_allowed:
-                    price_msg = (
-                        f"⚠️ <b>БЛОКУВАННЯ ПОКУПКИ (ЦІНА ВИЩА ЗА ЛІМІТ)!</b>\n\n"
-                        f"📦 <b>Товар:</b> <code>{mapping['card_id']}</code>\n"
-                        f"📈 <b>Поточна ціна:</b> ${current_price}\n"
-                        f"🛑 <b>Ваш ліміт:</b> ${max_allowed}\n"
-                        f"🆔 <b>Замовлення Digiseller:</b> <code>{order_id}</code>"
-                    )
+                    price_msg = f"⚠️ ЦІНА ВИЩА ЗА ЛІМІТ!\nПоточна: ${current_price}\nЛіміт: ${max_allowed}"
                     send_telegram(price_msg)
                     return "Price exceeds limit", 200
 
-                # КРОК 2: Робимо замовлення на точну кількість через POST /api/v1/gift-cards/order
                 rsc_url = "https://resell.codes/api/v1/gift-cards/order"
                 payload = {
                     "category_id": mapping["category_id"],
@@ -121,7 +102,6 @@ def digiseller_webhook():
                     if codes:
                         issued_codes = codes
                     elif rsc_order_number:
-                        # КРОК 3: Опитування статусу замовлення за номером GET /orders/{number}
                         for _ in range(6):
                             time.sleep(3)
                             status_url = f"https://resell.codes/api/v1/orders/{rsc_order_number}"
@@ -134,27 +114,17 @@ def digiseller_webhook():
                                     break
                                 if order_data.get('status') == 'completed':
                                     break
-                else:
-                    print(f"Помилка Resell.codes API: {response.text}")
         except Exception as err:
-            print(f"Помилка закупівлі ключа: {err}")
+            print(f"Помилка закупівлі: {err}")
 
-        # Формуємо текст видачі (коди розділені переносом рядка)
         final_output_text = "\n".join(issued_codes) if issued_codes else ""
 
-        # Сповіщення в Telegram про успішне замовлення
         if final_output_text:
-            msg = (
-                f"🛒 <b>АВТОМАТИЧНЕ ЗАМОВЛЕННЯ ({req_quantity} шт.)!</b>\n\n"
-                f"📦 <b>Товар ID (Digiseller):</b> <code>{product_id}</code>\n"
-                f"🆔 <b>Замовлення (Digiseller):</b> <code>{order_id}</code>\n"
-                f"📧 <b>Покупець:</b> {email}\n"
-                f"🔑 <b>Видані коди:</b>\n<code>{final_output_text}</code>"
-            )
+            msg = f"🛒 ЗАМОВЛЕННЯ ({req_quantity} шт.)!\nТовар ID: {product_id}\nЗамовлення Digiseller: {order_id}\nКоди:\n{final_output_text}"
             send_telegram(msg)
             return final_output_text, 200
         else:
-            return "Помилка автоматичної видачі ключів або недостатньо коштів.", 200
+            return "Помилка видачі ключів або недостатньо коштів.", 200
 
     except Exception as e:
         print(f"Помилка сервера: {e}", flush=True)
