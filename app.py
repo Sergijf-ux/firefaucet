@@ -15,7 +15,7 @@ PRODUCT_MAPPING = {
     "6223586": {
         "category_id": "roblox",
         "card_id": "50_robux",
-        "max_price": 0.95  # Max price limit per 1 unit
+        "max_price": 1.05  # Max price limit per 1 unit
     }
 }
 
@@ -45,8 +45,9 @@ def digiseller_webhook():
         if not merged:
             return "Webhook active / OK", 200
 
-        order_id = merged.get('ID_I') or merged.get('inv_id') or merged.get('order_id') or '—'
-        product_id = str(merged.get('ID_D') or merged.get('product_id') or '—')
+        # Support both uppercase and lowercase keys from Digiseller
+        order_id = merged.get('ID_I') or merged.get('id_i') or merged.get('inv_id') or merged.get('order_id') or '—'
+        product_id = str(merged.get('ID_D') or merged.get('id_d') or merged.get('product_id') or '—')
         email = merged.get('Email') or merged.get('email') or '—'
 
         if product_id == '—':
@@ -80,12 +81,12 @@ def digiseller_webhook():
                 if cat_resp.status_code == 200:
                     offers = cat_resp.json().get('offers', [])
                     for offer in offers:
-                        if offer.get('card_id') == mapping['card_id']:
+                        if offer.get('card_id'] == mapping['card_id']:
                             current_price = float(offer.get('price_usd', 0))
                             available_stock = int(offer.get('stock', 0))
                             break
                 
-                max_allowed = mapping.get("max_price", 0.95)
+                max_allowed = mapping.get("max_price", 1.05)
                 
                 # Check if stock is sufficient
                 if available_stock < req_quantity:
