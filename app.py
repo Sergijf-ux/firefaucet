@@ -4,7 +4,7 @@ import requests
 from flask import Flask, request
 
 app = Flask(__name__)
-app.url_map.strict_slashes = False  # Запобігає стиранню даних при редиректах
+app.url_map.strict_slashes = False
 
 # --- CONFIGURATION ---
 TELEGRAM_BOT_TOKEN = "8807171182:AAEewfuvrhwHYRE0N3Xc7_IjGUpFsL_TgqY"
@@ -51,12 +51,10 @@ def digiseller_webhook():
         
         merged = {**args_data, **form_data, **json_data, **values_data}
 
-        # Якщо дані чомусь порожні, але це реальний запит — примусово ставимо ID нашого товару для гарантованої видачі
         order_id = merged.get('ID_I') or merged.get('id_i') or merged.get('inv_id') or merged.get('order_id') or merged.get('inv') or 'manual_check'
         product_id = str(merged.get('ID_D') or merged.get('id_d') or merged.get('id_goods') or merged.get('goods_id') or merged.get('product_id') or '—')
         email = merged.get('Email') or merged.get('email') or '—'
 
-        # Запобіжник: якщо Digiseller прислав запит без ID, але він прийшов на вебхук — примусово обробляємо наш активний товар
         if product_id == '—':
             product_id = '6223586'
 
@@ -86,7 +84,7 @@ def digiseller_webhook():
                 if cat_resp.status_code == 200:
                     offers = cat_resp.json().get('offers', [])
                     for offer in offers:
-                        if offer.get('card_id'] == mapping['card_id']:
+                        if offer.get('card_id') == mapping['card_id']:  # Виправлено дужку
                             current_price = float(offer.get('price_usd', 0))
                             available_stock = int(offer.get('stock', 0))
                             break
@@ -154,3 +152,26 @@ def digiseller_webhook():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
