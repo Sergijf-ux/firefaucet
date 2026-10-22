@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 from flask import Flask, request
 
@@ -8,6 +9,15 @@ app = Flask(__name__)
 TELEGRAM_BOT_TOKEN = "8807171182:AAEewfuvrhwHYRE0N3Xc7_IjGUpFsL_TgqY"
 TELEGRAM_CHAT_ID = "8508676381"
 RESELL_CODES_API_KEY = "rsc_live_b61d7b4894461371f7ed9b636752c35ac703a6d5c4625cda"
+
+# Мапінг товарів та ліміт ціни (max_price)
+PRODUCT_MAPPING = {
+    "6223586": {
+        "category_id": "roblox",
+        "card_id": "50_robux",
+        "max_price": 0.95  # Максимально допустима ціна за 1 шт.
+    }
+}
 
 @app.route('/')
 def home():
@@ -29,41 +39,122 @@ def digiseller_webhook():
         args_data = request.args.to_dict() or {}
         
         merged = {**args_data, **form_data, **data}
+        print(f"INCOMING WEBHOOK DATA: {merged}", flush=True)
 
-        order_id = merged.get('ID_I') or merged.get('inv_id') or merged.get('order_id') or '—'
-        product_id = merged.get('ID_D') or merged.get('product_id') or merged.get('id_goods') or '—'
+        order_id = merged.get('ID_I') or merged.get('inv_id') or merged.get('order_id')  or '—'
+        product_id = str(merged.get('ID_D') or merged.get('product_id') or '—')
         email = merged.get('Email') or merged.get('email') or '—'
 
-        # 1. Запит до Resell.codes за ключем
-        issued_code = ""
+        # Динамічно зчитуємо кількість із замовлення Digiseller (за замовчуванням 1)
+        raw_qty = merged.get('cnt') or merged.get('quantity') or merged.get('amount') or 1
         try:
-            rsc_url = "https://resell.codes/api/v1/order" # Ендпоінт Resell.codes
-            headers = {"Authorization": f"Bearer {RESELL_CODES_API_KEY}"}
-            payload = {"product_id": product_id, "order_id": order_id}
-            
-            # Якщо завантажуєте ключі заздалегідь або купуєте авто:
-            # response = requests.post(rsc_url, json=payload, headers=headers, timeout=10)
-            # if response.status_code == 200:
-            #     issued_code = response.json().get("code", "")
+            req_quantity = int(raw_qty)
+        except ValueError:
+            req_quantity = 1
+
+        issued_codes = []
+        
+        try:
+            mapping = PRODUCT_MAPPING.get(product_id)
+            if not mapping:
+                print(f"Помилка: Для товару Digiseller ID {product_id} не знайдено мапінгу в PRODUCT_MAPPING!")
+            else:
+                headers = {
+                    "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
+                    "Content-Type": "application/json"
+                }
+                
+                # КРОК 1: Отримуємо каталог для перевірки ціни та поточного залишку (stock)
+                cat_url = f"https://resell.codes/api/v1/gift-cards/categories/{mapping['category_id']}/cards"
+                cat_resp = requests.get(cat_url, headers=headers, timeout=10)
+                
+                current_price = 0.0
+                available_stock = 0
+                if cat_resp.status_code == 200:
+                    offers = cat_resp.json().get('offers', [])
+                    for offer in offers:
+                        if offer.get('card_id') == mapping['card_id']:
+                            current_price = float(offer.get('price_usd', 0))
+                            available_stock = int(offer.get('stock', 0))
+                            break
+                
+                max_allowed = mapping.get("max_price", 0.95)
+                
+                # Перевірка 1: Чи достатньо товару на складі для цього замовлення
+                if available_stock < req_quantity:
+                    stock_msg = (
+                        f"⚠️ <b>БЛОКУВАННЯ: НЕДОСТАТНЬО ТОВАРУ НА СКЛАДІ!</b>\n\n"
+                        f"📦 <b>Товар:</b> <code>{mapping['card_id']}</code>\n"
+                        f"📉 <b>Залишок на складі:</b> {available_stock} шт.\n"
+                        f"🛒 <b>Покупка вимагає:</b> {req_quantity} шт.\n"
+                        f"🆔 <b>Замовлення Digiseller:</b> <code>{order_id}</code>"
+                    )
+                    send_telegram(stock_msg)
+                    return "Stock short / Not enough items", 200
+
+                # Перевірка 2: Чи не перевищує ціна ліміт
+                if current_price > max_allowed:
+                    price_msg = (
+                        f"⚠️ <b>БЛОКУВАННЯ ПОКУПКИ (ЦІНА ВИЩА ЗА ЛІМІТ)!</b>\n\n"
+                        f"📦 <b>Товар:</b> <code>{mapping['card_id']}</code>\n"
+                        f"📈 <b>Поточна ціна:</b> ${current_price}\n"
+                        f"🛑 <b>Ваш ліміт:</b> ${max_allowed}\n"
+                        f"🆔 <b>Замовлення Digiseller:</b> <code>{order_id}</code>"
+                    )
+                    send_telegram(price_msg)
+                    return "Price exceeds limit", 200
+
+                # КРОК 2: Робимо замовлення на точну кількість через POST /api/v1/gift-cards/order
+                rsc_url = "https://resell.codes/api/v1/gift-cards/order"
+                payload = {
+                    "category_id": mapping["category_id"],
+                    "card_id": mapping["card_id"],
+                    "quantity": req_quantity
+                }
+                
+                response = requests.post(rsc_url, json=payload, headers=headers, timeout=15)
+                if response.status_code == 200:
+                    resp_data = response.json()
+                    rsc_order_number = resp_data.get('number')
+                    
+                    codes = resp_data.get('codes', []) or resp_data.get('keys', [])
+                    if codes:
+                        issued_codes = codes
+                    elif rsc_order_number:
+                        # КРОК 3: Опитування статусу замовлення за номером GET /orders/{number}
+                        for _ in range(6):
+                            time.sleep(3)
+                            status_url = f"https://resell.codes/api/v1/orders/{rsc_order_number}"
+                            status_resp = requests.get(status_url, headers=headers, timeout=10)
+                            if status_resp.status_code == 200:
+                                order_data = status_resp.json()
+                                fetched_codes = order_data.get('codes', []) or order_data.get('keys', [])
+                                if fetched_codes:
+                                    issued_codes = fetched_codes
+                                    break
+                                if order_data.get('status') == 'completed':
+                                    break
+                else:
+                    print(f"Помилка Resell.codes API: {response.text}")
         except Exception as err:
             print(f"Помилка закупівлі ключа: {err}")
 
-        # 2. Відправляємо вам сповіщення в Telegram
-        msg = (
-            f"🛒 <b>НОВЕ ЗАМОВЛЕННЯ!</b>\n\n"
-            f"📦 <b>Товар ID:</b> <code>{product_id}</code>\n"
-            f"🆔 <b>Замовлення:</b> <code>{order_id}</code>\n"
-            f"📧 <b>Покупець:</b> {email}\n"
-            f"🔑 <b>Виданий ключ:</b> <code>{issued_code if issued_code else 'Автовидача'}</code>"
-        )
-        send_telegram(msg)
+        # Формуємо текст видачі (коди розділені переносом рядка)
+        final_output_text = "\n".join(issued_codes) if issued_codes else ""
 
-        # 3. ПОВЕРТАЄМО КЛЮЧ ПОКУПЦЕВІ НА DIGISELLER
-        # Digiseller відобразить цей текст покупцеві на сторінці після оплати
-        if issued_code:
-            return f"Ваш ключ: {issued_code}", 200
+        # Сповіщення в Telegram про успішне замовлення
+        if final_output_text:
+            msg = (
+                f"🛒 <b>АВТОМАТИЧНЕ ЗАМОВЛЕННЯ ({req_quantity} шт.)!</b>\n\n"
+                f"📦 <b>Товар ID (Digiseller):</b> <code>{product_id}</code>\n"
+                f"🆔 <b>Замовлення (Digiseller):</b> <code>{order_id}</code>\n"
+                f"📧 <b>Покупець:</b> {email}\n"
+                f"🔑 <b>Видані коди:</b>\n<code>{final_output_text}</code>"
+            )
+            send_telegram(msg)
+            return final_output_text, 200
         else:
-            return "Дякуємо за покупку! Дякуємо за замовлення.", 200
+            return "Помилка автоматичної видачі ключів або недостатньо коштів.", 200
 
     except Exception as e:
         print(f"Помилка сервера: {e}", flush=True)
