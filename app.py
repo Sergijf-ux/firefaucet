@@ -5,15 +5,17 @@ from flask import Flask, request
 
 app = Flask(__name__)
 
+# --- CONFIGURATION ---
 TELEGRAM_BOT_TOKEN = "8807171182:AAEewfuvrhwHYRE0N3Xc7_IjGUpFsL_TgqY"
 TELEGRAM_CHAT_ID = "8508676381"
 RESELL_CODES_API_KEY = "rsc_live_b61d7b4894461371f7ed9b636752c35ac703a6d5c4625cda"
 
+# Product mapping and price limit (max_price per 1 unit)
 PRODUCT_MAPPING = {
     "6223586": {
         "category_id": "roblox",
         "card_id": "50_robux",
-        "max_price": 0.95
+        "max_price": 0.95  # Max price limit per 1 unit
     }
 }
 
@@ -27,7 +29,7 @@ def send_telegram(text):
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
         requests.post(url, json=payload, timeout=10)
     except Exception as e:
-        print(f"Помилка Telegram: {e}")
+        print(f"Telegram error: {e}")
 
 @app.route('/webhook', methods=['POST', 'GET'])
 def digiseller_webhook():
@@ -43,6 +45,7 @@ def digiseller_webhook():
         product_id = str(merged.get('ID_D') or merged.get('product_id') or '—')
         email = merged.get('Email') or merged.get('email') or '—'
 
+        # Dynamically read the purchase quantity from Digiseller (defaults to 1)
         raw_qty = merged.get('cnt') or merged.get('quantity') or merged.get('amount') or 1
         try:
             req_quantity = int(raw_qty)
@@ -54,13 +57,14 @@ def digiseller_webhook():
         try:
             mapping = PRODUCT_MAPPING.get(product_id)
             if not mapping:
-                print(f"Помилка: Для товару ID {product_id} не знайдено зіставлення!")
+                print(f"Error: No mapping found for Digiseller product ID {product_id}!")
             else:
                 headers = {
                     "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
                     "Content-Type": "application/json"
                 }
                 
+                # STEP 1: Check current price and available stock
                 cat_url = f"https://resell.codes/api/v1/gift-cards/categories/{mapping['category_id']}/cards"
                 cat_resp = requests.get(cat_url, headers=headers, timeout=10)
                 
@@ -76,16 +80,31 @@ def digiseller_webhook():
                 
                 max_allowed = mapping.get("max_price", 0.95)
                 
+                # Check if stock is sufficient
                 if available_stock < req_quantity:
-                    stock_msg = f"⚠️ НЕДОСТАТНЬО ТОВАРУ НА СКЛАДІ!\nТовар: {mapping['card_id']}\nЗалишок: {available_stock}\nПотрібно: {req_quantity}"
+                    stock_msg = (
+                        f"⚠️ <b>STOCK SHORTAGE BLOCK!</b>\n\n"
+                        f"📦 <b>Card:</b> <code>{mapping['card_id']}</code>\n"
+                        f"📉 <b>Available Stock:</b> {available_stock} pcs.\n"
+                        f"🛒 <b>Requested Qty:</b> {req_quantity} pcs.\n"
+                        f"🆔 <b>Digiseller Order:</b> <code>{order_id}</code>"
+                    )
                     send_telegram(stock_msg)
-                    return "Stock short", 200
+                    return "Stock short / Not enough items", 200
 
+                # Check max price limit per unit
                 if current_price > max_allowed:
-                    price_msg = f"⚠️ ЦІНА ВИЩА ЗА ЛІМІТ!\nПоточна: ${current_price}\nЛіміт: ${max_allowed}"
+                    price_msg = (
+                        f"⚠️ <b>PRICE LIMIT EXCEEDED BLOCK!</b>\n\n"
+                        f"📦 <b>Card:</b> <code>{mapping['card_id']}</code>\n"
+                        f"📈 <b>Current Price:</b> ${current_price}\n"
+                        f"🛑 <b>Your Limit:</b> ${max_allowed}\n"
+                        f"🆔 <b>Digiseller Order:</b> <code>{order_id}</code>"
+                    )
                     send_telegram(price_msg)
                     return "Price exceeds limit", 200
 
+                # STEP 2: Place order for exact quantity via Resell.codes API
                 rsc_url = "https://resell.codes/api/v1/gift-cards/order"
                 payload = {
                     "category_id": mapping["category_id"],
@@ -102,6 +121,7 @@ def digiseller_webhook():
                     if codes:
                         issued_codes = codes
                     elif rsc_order_number:
+                        # STEP 3: Poll order status by order number
                         for _ in range(6):
                             time.sleep(3)
                             status_url = f"https://resell.codes/api/v1/orders/{rsc_order_number}"
@@ -114,20 +134,28 @@ def digiseller_webhook():
                                     break
                                 if order_data.get('status') == 'completed':
                                     break
+                else:
+                    print(f"Resell.codes API Error: {response.text}")
         except Exception as err:
-            print(f"Помилка закупівлі: {err}")
+            print(f"Purchase error: {err}")
 
         final_output_text = "\n".join(issued_codes) if issued_codes else ""
 
         if final_output_text:
-            msg = f"🛒 ЗАМОВЛЕННЯ ({req_quantity} шт.)!\nТовар ID: {product_id}\nЗамовлення Digiseller: {order_id}\nКоди:\n{final_output_text}"
+            msg = (
+                f"🛒 <b>AUTOMATED ORDER ({req_quantity} pcs.)!</b>\n\n"
+                f"📦 <b>Digiseller Product ID:</b> <code>{product_id}</code>\n"
+                f"🆔 <b>Digiseller Order:</b> <code>{order_id}</code>\n"
+                f"📧 <b>Buyer:</b> {email}\n"
+                f"🔑 <b>Issued Codes:</b>\n<code>{final_output_text}</code>"
+            )
             send_telegram(msg)
             return final_output_text, 200
         else:
-            return "Помилка видачі ключів або недостатньо коштів.", 200
+            return "Error issuing codes or insufficient balance.", 200
 
     except Exception as e:
-        print(f"Помилка сервера: {e}", flush=True)
+        print(f"Server error: {e}", flush=True)
         return "ERROR", 500
 
 if __name__ == '__main__':
