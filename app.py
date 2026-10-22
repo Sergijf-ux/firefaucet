@@ -61,18 +61,20 @@ def digiseller_webhook():
         try:
             mapping = PRODUCT_MAPPING.get(product_id)
             if not mapping:
-                mapping = PRODUCT_MAPPING["6223586"] # Запобіжник для нашого товару
+                mapping = PRODUCT_MAPPING["6223586"]
 
             headers = {
                 "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
                 "Content-Type": "application/json"
             }
             
-            # Одразу робимо запит на покупку без блокувань залишків
+            # Виправляємо формат payload, дублюючи ключі для сумісності з різними версіями їхнього API
             rsc_url = "https://resell.codes/api/v1/gift-cards/order"
             payload = {
                 "category_id": mapping["category_id"],
+                "category": mapping["category_id"],
                 "card_id": mapping["card_id"],
+                "card": mapping["card_id"],
                 "quantity": req_quantity
             }
             
