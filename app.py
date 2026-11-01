@@ -63,13 +63,13 @@ def view_full_catalog_in_telegram():
                 c_data = cards_resp.json()
                 offers = c_data.get('offers', []) or c_data.get('cards', []) or c_data.get('data', [])
                 if offers:
-                    cat_msg = f"📂 <b>Категорія: {cat_name}</b>\n\n"
+                    cat_msg = f"📂 Категорія: {cat_name}\n\n"
                     for offer in offers:
                         title = offer.get('title', 'Unknown')
                         price = offer.get('price', '—')
                         stock = offer.get('stock', '—')
                         card_id = offer.get('card_id') or offer.get('id')
-                        cat_msg += f"▪️ {title}\n   ID: <code>{card_id}</code>\n   Ціна: <b>${price}</b> | Залишок: <b>{stock}</b>\n\n"
+                        cat_msg += f"▪️ {title}\n   ID: {card_id}\n   Ціна: ${price} | Залишок: {stock}\n\n"
                     
                     send_telegram(cat_msg)
             
@@ -148,7 +148,6 @@ def check_all_products_loop():
 @app.route('/webhook/', methods=['POST', 'GET'])
 def digiseller_webhook():
     try:
-        raw_body = request.get_data(as_text=True)
         args_data = request.args.to_dict()
         form_data = request.form.to_dict()
         json_data = request.get_json(silent=True, force=True) or {}
@@ -158,7 +157,6 @@ def digiseller_webhook():
 
         order_id = merged.get('ID_I') or merged.get('id_i') or merged.get('inv_id') or merged.get('order_id') or merged.get('inv') or 'manual_check'
         product_id = str(merged.get('ID_D') or merged.get('id_d') or merged.get('id_goods') or merged.get('goods_id') or merged.get('product_id') or '6223586')
-        email = merged.get('Email') or merged.get('email') or '—'
 
         if product_id == '—':
             product_id = '6223586'
@@ -286,7 +284,6 @@ if __name__ == '__main__':
     
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
-
 
 
 
