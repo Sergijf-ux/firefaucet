@@ -32,27 +32,43 @@ def send_telegram(text):
     except Exception as e:
         print(f"Telegram error: {e}")
 
-# --- ЕНДПОІНТ КАТАЛОГУ ---
+# --- ЕНДПОІНТ КАТАЛОГУ (ВИПРАВЛЕНИЙ ЗАГОЛОВОК X-API-KEY) ---
 @app.route('/catalog', methods=['GET'])
 def view_full_catalog_in_telegram():
     headers = {
-        "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
+        "X-API-Key": RESELL_CODES_API_KEY,
         "Content-Type": "application/json",
         "Accept": "application/json"
     }
     try:
-        # Використовуємо реальний існуючий домен
-        url = "https://resell.codes/api/v1/gift-cards"
-        response = requests.get(url, headers=headers, timeout=10)
+        urls_to_test = [
+            "https://resell.codes/api/v1/products",
+            "https://resell.codes/api/products",
+            "https://resell.codes/api/v1/items",
+            "https://resell.codes/api/items"
+        ]
         
-        safe_text = str(response.text[:300]).replace('<', '&lt;').replace('>', '&gt;')
-        debug_msg = f"🔍 <b>ПЕРЕВІРКА RESELL.CODES:</b>\nСтатус: {response.status_code}\nВідповідь: <code>{safe_text}</code>"
-        send_telegram(debug_msg)
+        success_resp = None
+        working_url = ""
+        
+        for url in urls_to_test:
+            resp = requests.get(url, headers=headers, timeout=10)
+            print(f"Testing {url} -> Status: {resp.status_code}")
+            if resp.status_code == 200:
+                success_resp = resp
+                working_url = url
+                break
+                
+        if success_resp and success_resp.status_code == 200:
+            data = success_resp.json()
+            send_telegram(f"✅ <b>ЗНАЙДЕНО РОБОЧИЙ ЕНДПОІНТ!</b>\nURL: <code>{working_url}</code>\nДані: <code>{str(data)[:200]}</code>")
+            return "Catalog endpoint working!", 200
+        else:
+            send_telegram("❌ <b>ПОМИЛКА:</b> Всі тестові шляхи повернули помилку або 404 навіть із заголовком X-API-Key.")
+            return "All paths returned error.", 500
             
-        return "Catalog check completed!", 200
-        
     except Exception as e:
-        err_text = f"❌ Помилка з'єднання: {e}"
+        err_text = f"❌ Помилка: {e}"
         send_telegram(err_text)
         return err_text, 500
 
@@ -61,15 +77,15 @@ def check_all_products_loop():
     while True:
         try:
             headers = {
-                "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
+                "X-API-Key": RESELL_CODES_API_KEY,
                 "Content-Type": "application/json"
             }
-            requests.get("https://resell.codes/api/v1/gift-cards", headers=headers, timeout=10)
+            requests.get("https://resell.codes/api/v1/products", headers=headers, timeout=10)
         except Exception as e:
             print(f"Monitor loop error: {e}")
         time.sleep(300)
 
-# --- ВЕБХУК DIGISELLER ---
+# --- ВЕБХУК DIGISELLER (ПОВНА ЛОГІКА ВИДАЧІ КЛЮЧІВ ПОКУПЦЮ) ---
 @app.route('/webhook', methods=['POST', 'GET'])
 @app.route('/webhook/', methods=['POST', 'GET'])
 def digiseller_webhook():
@@ -97,7 +113,7 @@ def digiseller_webhook():
         
         try:
             headers = {
-                "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
+                "X-API-Key": RESELL_CODES_API_KEY,
                 "Content-Type": "application/json",
                 "Accept": "application/json"
             }
@@ -116,7 +132,7 @@ def digiseller_webhook():
                 if codes:
                     issued_codes = codes
             else:
-                send_telegram(f"❌ <b>Помилка API закупівлі:</b> статус {response.status_code}")
+                send_telegram(f"❌ <b>Помилка закупівлі API:</b> статус {response.status_code}, текст: {response.text}")
         except Exception as err:
             print(f"Purchase error: {err}")
 
@@ -127,7 +143,7 @@ def digiseller_webhook():
                 f"🛒 <b>УСПІШНЕ ЗАМОВЛЕННЯ!</b>\n\n"
                 f"📦 <b>ID товару:</b> <code>{product_id}</code>\n"
                 f"🆔 <b>Замовлення:</b> <code>{order_id}</code>\n"
-                f"🔑 <b>Ключі:</b>\n<code>{final_output_text}</code>"
+                f"🔑 <b>Ключі для покупця:</b>\n<code>{final_output_text}</code>"
             )
             send_telegram(msg)
             return final_output_text, 200
