@@ -32,7 +32,7 @@ def send_telegram(text):
     except Exception as e:
         print(f"Telegram error: {e}")
 
-# --- ЕНДПОІНТ ДЛЯ ПЕРЕГЛЯДУ КАТАЛОГУ В ТЕЛЕГРАМ ---
+# --- ЕНДПОІНТ ДЛЯ ПЕРЕГЛЯДУ КАТАЛОГУ В ТЕЛЕГРАМ (ЧИСТИЙ ТЕКСТ) ---
 @app.route('/catalog', methods=['GET'])
 def view_full_catalog_in_telegram():
     headers = {
@@ -40,20 +40,17 @@ def view_full_catalog_in_telegram():
         "Content-Type": "application/json"
     }
     try:
-        # Виправлений актуальний шлях до категорій RSC
         cat_list_url = "https://resell.codes/api/v1/gift-cards/categories"
         cat_resp = requests.get(cat_list_url, headers=headers, timeout=10)
         
         if cat_resp.status_code != 200:
-            return f"Error fetching categories from RSC: {cat_resp.status_code} - {cat_resp.text}", 500
+            return f"Error fetching categories: {cat_resp.status_code}", 500
             
         data = cat_resp.json()
         categories = data.get('categories', []) or data.get('data', []) or data
         if not isinstance(categories, list):
             categories = [categories]
 
-        report_lines = ["📋 <b>АКТУАЛЬНИЙ КАТАЛОГ RESELL.CODES</b>\n"]
-        
         for cat in categories:
             cat_id = cat.get('id') or cat.get('slug')
             cat_name = cat.get('name', 'Category')
@@ -66,23 +63,15 @@ def view_full_catalog_in_telegram():
                 c_data = cards_resp.json()
                 offers = c_data.get('offers', []) or c_data.get('cards', []) or c_data.get('data', [])
                 if offers:
-                    report_lines.append(f"📂 <b>{cat_name}</b>")
+                    cat_msg = f"📂 <b>Категорія: {cat_name}</b>\n\n"
                     for offer in offers:
                         title = offer.get('title', 'Unknown')
                         price = offer.get('price', '—')
                         stock = offer.get('stock', '—')
                         card_id = offer.get('card_id') or offer.get('id')
-                        report_lines.append(f"  ▪️ {title} (ID: <code>{card_id}</code>)\n     Ціна: <b>${price}</b> | Залишок: <b>{stock}</b>")
-                    report_lines.append("")
-
-        full_message = "\n".join(report_lines)
-        
-        if len(full_message) > 4000:
-            chunks = [full_message[i:i+4000] for i in range(0, len(full_message), 4000)]
-            for chunk in chunks:
-                send_telegram(chunk)
-        else:
-            send_telegram(full_message)
+                        cat_msg += f"▪️ {title}\n   ID: <code>{card_id}</code>\n   Ціна: <b>${price}</b> | Залишок: <b>{stock}</b>\n\n"
+                    
+                    send_telegram(cat_msg)
             
         return "Catalog successfully sent to your Telegram!", 200
         
@@ -226,8 +215,6 @@ def digiseller_webhook():
             if not target_card_id:
                 target_card_id = "50_robux"
 
-            print(f"Dynamic API Resolved -> Category: {target_category}, Card: {target_card_id}, Price: {current_card_price}", flush=True)
-
             # ЗАХИСТ ЦІНИ
             allowed_max_price = MAX_PRICES.get(str(target_card_id), 1.00)
             
@@ -248,7 +235,6 @@ def digiseller_webhook():
             }
             
             response = requests.post(rsc_url, json=payload, headers=headers, timeout=15)
-            print(f"Resell.codes Response Status: {response.status_code}, Body: {response.text}", flush=True)
             
             if response.status_code == 200:
                 resp_data = response.json()
