@@ -32,7 +32,7 @@ def send_telegram(text):
     except Exception as e:
         print(f"Telegram error: {e}")
 
-# --- ЕНДПОІНТ КАТАЛОГУ (ПОШУК ПРАВИЛЬНОГО ДОМЕНУ API) ---
+# --- ЕНДПОІНТ КАТАЛОГУ ---
 @app.route('/catalog', methods=['GET'])
 def view_full_catalog_in_telegram():
     headers = {
@@ -41,37 +41,18 @@ def view_full_catalog_in_telegram():
         "Accept": "application/json"
     }
     try:
-        # Перевіряємо різні можливі базові адреси API
-        candidate_urls = [
-            "https://api.resell.codes/v1/gift-cards",
-            "https://api.resell.codes/gift-cards",
-            "https://resell.codes/api/v1/gift-cards",
-            "https://resell.codes/api/giftcards"
-        ]
+        # Використовуємо реальний існуючий домен
+        url = "https://resell.codes/api/v1/gift-cards"
+        response = requests.get(url, headers=headers, timeout=10)
         
-        success_response = None
-        working_url = ""
-        
-        for url in candidate_urls:
-            resp = requests.get(url, headers=headers, timeout=10)
-            print(f"Testing URL {url} -> Status: {resp.status_code}")
-            if resp.status_code == 200:
-                success_response = resp
-                working_url = url
-                break
-                
-        if success_response and success_response.status_code == 200:
-            data = success_response.json()
-            debug_msg = f"✅ <b>ЗНАЙДЕНО РОБОЧИЙ URL!</b>\nАдреса: <code>{working_url}</code>\nДані: <code>{str(data)[:200]}</code>"
-            send_telegram(debug_msg)
-            return "Catalog endpoint found and working!", 200
-        else:
-            debug_msg = "❌ <b>ЖОДЕН ІЗ ВАРІАНТІВ API НЕ ВІДПОВІВ 200 OK!</b> Перевірте правильність токена або документацію постачальника."
-            send_telegram(debug_msg)
-            return "All API paths returned 404 or error.", 500
+        safe_text = str(response.text[:300]).replace('<', '&lt;').replace('>', '&gt;')
+        debug_msg = f"🔍 <b>ПЕРЕВІРКА RESELL.CODES:</b>\nСтатус: {response.status_code}\nВідповідь: <code>{safe_text}</code>"
+        send_telegram(debug_msg)
             
+        return "Catalog check completed!", 200
+        
     except Exception as e:
-        err_text = f"❌ Помилка: {e}"
+        err_text = f"❌ Помилка з'єднання: {e}"
         send_telegram(err_text)
         return err_text, 500
 
@@ -83,8 +64,7 @@ def check_all_products_loop():
                 "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
                 "Content-Type": "application/json"
             }
-            resp = requests.get("https://api.resell.codes/v1/gift-cards", headers=headers, timeout=10)
-            print(f"Monitor check status: {resp.status_code}")
+            requests.get("https://resell.codes/api/v1/gift-cards", headers=headers, timeout=10)
         except Exception as e:
             print(f"Monitor loop error: {e}")
         time.sleep(300)
@@ -122,8 +102,7 @@ def digiseller_webhook():
                 "Accept": "application/json"
             }
             
-            # Використовуємо потенційний робочий шлях для замовлень
-            rsc_url = "https://api.resell.codes/v1/orders"
+            rsc_url = "https://resell.codes/api/v1/orders"
             payload = {
                 "sku": "roblox-gift-card-50-robux",
                 "quantity": req_quantity
@@ -137,7 +116,7 @@ def digiseller_webhook():
                 if codes:
                     issued_codes = codes
             else:
-                send_telegram(f"❌ <b>Помилка API закупівлі:</b> статус {response.status_code}, текст: {response.text}")
+                send_telegram(f"❌ <b>Помилка API закупівлі:</b> статус {response.status_code}")
         except Exception as err:
             print(f"Purchase error: {err}")
 
@@ -166,7 +145,6 @@ if __name__ == '__main__':
     
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
-
 
 
 
