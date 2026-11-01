@@ -32,21 +32,26 @@ def send_telegram(text):
     except Exception as e:
         print(f"Telegram error: {e}")
 
-# --- ЕНДПОІНТ КАТАЛОГУ (ДІАГНОСТИКА RSC API) ---
+# --- ЕНДПОІНТ КАТАЛОГУ (НОВИЙ ШЛЯХ API V2) ---
 @app.route('/catalog', methods=['GET'])
 def view_full_catalog_in_telegram():
     headers = {
         "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Accept": "application/json"
     }
     try:
-        test_url = "https://resell.codes/api/v1/"
+        # Пробуємо оновлений шлях API v2 або прямий доступ до товарів
+        test_url = "https://resell.codes/api/v2/items"
         response = requests.get(test_url, headers=headers, timeout=10)
         
-        # Очищаємо текст від можливих проблемних символів для HTML-парсера
+        if response.status_code != 200:
+            test_url = "https://resell.codes/api/items"
+            response = requests.get(test_url, headers=headers, timeout=10)
+
         safe_text = str(response.text[:300]).replace('<', '&lt;').replace('>', '&gt;')
         
-        debug_msg = f"🔍 <b>ДІАГНОСТИКА RSC API:</b>\nСтатус: {response.status_code}\nВідповідь: <code>{safe_text}</code>"
+        debug_msg = f"🔍 <b>ДІАГНОСТИКА RSC API v2:</b>\nСтатус: {response.status_code}\nВідповідь: <code>{safe_text}</code>"
         send_telegram(debug_msg)
             
         return "Diagnostic sent to Telegram!", 200
@@ -64,7 +69,7 @@ def check_all_products_loop():
                 "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
                 "Content-Type": "application/json"
             }
-            resp = requests.get("https://resell.codes/api/v1/", headers=headers, timeout=10)
+            resp = requests.get("https://resell.codes/api/v2/items", headers=headers, timeout=10)
             print(f"Monitor check status: {resp.status_code}")
         except Exception as e:
             print(f"Monitor loop error: {e}")
@@ -99,10 +104,11 @@ def digiseller_webhook():
         try:
             headers = {
                 "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
+                "Accept": "application/json"
             }
             
-            rsc_url = "https://resell.codes/api/v1/orders"
+            rsc_url = "https://resell.codes/api/v2/orders"
             payload = {
                 "sku": "roblox-gift-card-50-robux",
                 "quantity": req_quantity
