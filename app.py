@@ -32,7 +32,6 @@ def send_telegram(text):
     except Exception as e:
         print(f"Telegram error: {e}")
 
-# --- CATALOG ENDPOINT (DIRECT TEXT TO TELEGRAM) ---
 @app.route('/catalog', methods=['GET'])
 def view_full_catalog_in_telegram():
     headers = {
@@ -40,44 +39,39 @@ def view_full_catalog_in_telegram():
         "Content-Type": "application/json"
     }
     try:
-        cards_url = "https://resell.codes/api/v1/gift-cards/cards"
-        response = requests.get(cards_url, headers=headers, timeout=10)
+        cat_list_url = "https://resell.codes/api/v1/gift-cards/categories"
+        cat_resp = requests.get(cat_list_url, headers=headers, timeout=10)
         
-        if response.status_code != 200:
-            cards_url = "https://resell.codes/api/v1/gift-cards"
-            response = requests.get(cards_url, headers=headers, timeout=10)
+        if cat_resp.status_code != 200:
+            send_telegram(f"❌ Error fetching categories: {cat_resp.status_code}")
+            return f"Error fetching categories: {cat_resp.status_code}", 500
             
-        if response.status_code != 200:
-            send_telegram(f"❌ Error fetching catalog: {response.status_code}")
-            return f"Error fetching catalog: {response.status_code}", 500
-            
-        data = response.json()
-        offers = data.get('cards', []) or data.get('offers', []) or data.get('data', []) or data
-        
-        if not isinstance(offers, list):
-            offers = [offers]
+        data = cat_resp.json()
+        categories = data.get('categories', []) or data.get('data', []) or data
+        if not isinstance(categories, list):
+            categories = [categories]
 
-        if not offers:
-            send_telegram("⚠️ Catalog is empty or API format changed.")
-            return "Catalog is empty", 200
-
-        catalog_msg = "📂 <b>CURRENT RSC CATALOG:</b>\n\n"
-        for offer in offers:
-            title = offer.get('title', 'Unknown')
-            price = offer.get('price', '—')
-            stock = offer.get('stock', '—')
-            card_id = offer.get('card_id') or offer.get('id')
-            
-            line = f"▪️ {title}\n   ID: <code>{card_id}</code>\n   Price: <b>${price}</b> | Stock: <b>{stock}</b>\n\n"
-            
-            if len(catalog_msg) + len(line) > 4000:
-                send_telegram(catalog_msg)
-                catalog_msg = ""
-            
-            catalog_msg += line
-            
-        if catalog_msg:
-            send_telegram(catalog_msg)
+        for cat in categories:
+            cat_id = cat.get('id') or cat.get('slug')
+            cat_name = cat.get('name', 'Category')
+            if not cat_id:
+                continue
+                
+            cards_url = f"https://resell.codes/api/v1/gift-cards/categories/{cat_id}/cards"
+            cards_resp = requests.get(cards_url, headers=headers, timeout=10)
+            if cards_resp.status_code == 200:
+                c_data = cards_resp.json()
+                offers = c_data.get('offers', []) or c_data.get('cards', []) or c_data.get('data', [])
+                if offers:
+                    cat_msg = f"📂 <b>Category: {cat_name}</b>\n\n"
+                    for offer in offers:
+                        title = offer.get('title', 'Unknown')
+                        price = offer.get('price', '—')
+                        stock = offer.get('stock', '—')
+                        card_id = offer.get('card_id') or offer.get('id')
+                        cat_msg += f"▪️ {title}\n   ID: <code>{card_id}</code>\n   Price: <b>${price}</b> | Stock: <b>${stock}</b>\n\n"
+                    
+                    send_telegram(cat_msg)
             
         return "Catalog successfully sent to your Telegram!", 200
         
@@ -94,50 +88,57 @@ def check_all_products_loop():
     }
     while True:
         try:
-            cards_url = "https://resell.codes/api/v1/gift-cards/cards"
-            resp = requests.get(cards_url, headers=headers, timeout=10)
-            if resp.status_code != 200:
-                cards_url = "https://resell.codes/api/v1/gift-cards"
-                resp = requests.get(cards_url, headers=headers, timeout=10)
-                
-            if resp.status_code == 200:
-                data = resp.json()
-                offers = data.get('cards', []) or data.get('offers', []) or data.get('data', []) or data
-                if isinstance(offers, list):
-                    for offer in offers:
-                        item_id = str(offer.get('card_id') or offer.get('id'))
-                        title = offer.get('title', 'Unknown')
-                        price = offer.get('price')
-                        stock = offer.get('stock')
-                        
-                        if price is None:
-                            continue
-                            
-                        if item_id not in previous_catalog:
-                            previous_catalog[item_id] = {"price": price, "stock": stock, "title": title}
+            cat_list_url = "https://resell.codes/api/v1/gift-cards/categories"
+            cat_resp = requests.get(cat_list_url, headers=headers, timeout=10)
+            
+            if cat_resp.status_code == 200:
+                data = cat_resp.json()
+                categories = data.get('categories', []) or data.get('data', []) or data
+                if isinstance(categories, list):
+                    for cat in categories:
+                        cat_id = cat.get('id') or cat.get('slug')
+                        if not cat_id:
                             continue
                         
-                        old = previous_catalog[item_id]
-                        
-                        if old["price"] != price:
-                            diff = round(price - old["price"], 4)
-                            sign = "+" if diff > 0 else ""
-                            alert_msg = (
-                                f"🚨 <b>PRICE CHANGE ON RSC!</b>\n"
-                                f"📦 <b>Product:</b> {title}\n"
-                                f"💰 <b>Old Price:</b> ${old['price']} ➡️ <b>New:</b> ${price} ({sign}{diff}$)"
-                            )
-                            send_telegram(alert_msg)
-                            old["price"] = price
-                            
-                        if old["stock"] != stock:
-                            alert_msg = (
-                                f"📦 <b>STOCK CHANGE ON RSC!</b>\n"
-                                f"🏷 <b>Product:</b> {title}\n"
-                                f"📊 <b>Was:</b> {old['stock']} ➡️ <b>Now:</b> {stock}"
-                            )
-                            send_telegram(alert_msg)
-                            old["stock"] = stock
+                        cards_url = f"https://resell.codes/api/v1/gift-cards/categories/{cat_id}/cards"
+                        cards_resp = requests.get(cards_url, headers=headers, timeout=10)
+                        if cards_resp.status_code == 200:
+                            c_data = cards_resp.json()
+                            offers = c_data.get('offers', []) or c_data.get('cards', []) or c_data.get('data', [])
+                            for offer in offers:
+                                item_id = str(offer.get('card_id') or offer.get('id'))
+                                title = offer.get('title', 'Unknown')
+                                price = offer.get('price')
+                                stock = offer.get('stock')
+                                
+                                if price is None:
+                                    continue
+                                    
+                                if item_id not in previous_catalog:
+                                    previous_catalog[item_id] = {"price": price, "stock": stock, "title": title}
+                                    continue
+                                
+                                old = previous_catalog[item_id]
+                                
+                                if old["price"] != price:
+                                    diff = round(price - old["price"], 4)
+                                    sign = "+" if diff > 0 else ""
+                                    alert_msg = (
+                                        f"🚨 <b>PRICE CHANGE ON RSC!</b>\n"
+                                        f"📦 <b>Product:</b> {title}\n"
+                                        f"💰 <b>Old Price:</b> ${old['price']} ➡️ <b>New:</b> ${price} ({sign}{diff}$)"
+                                    )
+                                    send_telegram(alert_msg)
+                                    old["price"] = price
+                                    
+                                if old["stock"] != stock:
+                                    alert_msg = (
+                                        f"📦 <b>STOCK CHANGE ON RSC!</b>\n"
+                                        f"🏷 <b>Product:</b> {title}\n"
+                                        f"📊 <b>Was:</b> {old['stock']} ➡️ <b>Now:</b> {stock}"
+                                    )
+                                    send_telegram(alert_msg)
+                                    old["stock"] = stock
         except Exception as e:
             print(f"Monitor loop error: {e}")
             
@@ -174,26 +175,43 @@ def digiseller_webhook():
                 "Content-Type": "application/json"
             }
             
-            cards_url = "https://resell.codes/api/v1/gift-cards/cards"
-            resp = requests.get(cards_url, headers=headers, timeout=10)
-            if resp.status_code != 200:
-                cards_url = "https://resell.codes/api/v1/gift-cards"
-                resp = requests.get(cards_url, headers=headers, timeout=10)
-                
-            target_category = "roblox"
-            target_card_id = "50_robux"
+            cat_list_url = "https://resell.codes/api/v1/gift-cards/categories"
+            cat_resp = requests.get(cat_list_url, headers=headers, timeout=10)
+            
+            target_category = None
+            target_card_id = None
             current_card_price = None
             
-            if resp.status_code == 200:
-                data = resp.json()
-                offers = data.get('cards', []) or data.get('offers', []) or data.get('data', []) or data
-                if isinstance(offers, list):
-                    for offer in offers:
-                        offer_title = str(offer.get('title', '')).lower()
-                        if '50' in offer_title and 'robux' in offer_title:
-                            target_card_id = offer.get('card_id') or offer.get('id', '50_robux')
-                            current_card_price = offer.get('price')
+            if cat_resp.status_code == 200:
+                data = cat_resp.json()
+                categories = data.get('categories', []) or data.get('data', []) or data
+                if isinstance(categories, list):
+                    for cat in categories:
+                        cat_name = str(cat.get('name', '')).lower()
+                        cat_slug = str(cat.get('slug', '')).lower()
+                        cat_id = cat.get('id') or cat.get('category_id')
+                        
+                        if 'roblox' in cat_name or 'roblox' in cat_slug or str(cat_id) == 'roblox':
+                            target_category = cat_id or cat_slug
+                            
+                            cards_url = f"https://resell.codes/api/v1/gift-cards/categories/{target_category}/cards"
+                            cards_resp = requests.get(cards_url, headers=headers, timeout=10)
+                            if cards_resp.status_code == 200:
+                                c_data = cards_resp.json()
+                                offers = c_data.get('offers', []) or c_data.get('cards', []) or c_data.get('data', [])
+                                for offer in offers:
+                                    offer_title = str(offer.get('title', '')).lower()
+                                    offer_card_id = offer.get('card_id') or offer.get('id')
+                                    if '50' in offer_title and 'robux' in offer_title:
+                                        target_card_id = offer_card_id
+                                        current_card_price = offer.get('price')
+                                        break
                             break
+            
+            if not target_category:
+                target_category = "roblox"
+            if not target_card_id:
+                target_card_id = "50_robux"
 
             # PRICE PROTECTION
             allowed_max_price = MAX_PRICES.get(str(target_card_id), 1.00)
@@ -266,7 +284,6 @@ if __name__ == '__main__':
     
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
-
 
 
 
