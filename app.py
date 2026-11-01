@@ -1,6 +1,7 @@
 import os
 import time
 import requests
+import threading
 from flask import Flask, request
 
 app = Flask(__name__)
@@ -10,6 +11,17 @@ app.url_map.strict_slashes = False
 TELEGRAM_BOT_TOKEN = "8807171182:AAEewfuvrhwHYRE0N3Xc7_IjGUpFsL_TgqY"
 TELEGRAM_CHAT_ID = "8508676381"
 RESELL_CODES_API_KEY = "rsc_live_b61d7b4894461371f7ed9b636752c35ac703a6d5c4625cda"
+
+# --- ІНДИВІДУАЛЬНІ ЛІМІТИ ЗАКУПІВЛІ ДЛЯ КОЖНОГО ТОВАРУ ---
+# Ключ — це card_id або унікальна назва, значення — максимальна ціна закупівлі у USD
+MAX_PRICES = {
+    "50_robux": 1.00,    # Купуємо 50 Robux тільки якщо закупка нижча за $1.00
+    "100_robux": 1.95,   # Приклад для 100 Robux (коли повернеться)
+    # Для інших товарів, які не знайдені в словнику, спрацює дефолтний ліміт $1.00
+}
+
+# Словник для фонового моніторингу змін
+previous_catalog = {}
 
 @app.route('/')
 def home():
@@ -22,6 +34,122 @@ def send_telegram(text):
         requests.post(url, json=payload, timeout=10)
     except Exception as e:
         print(f"Telegram error: {e}")
+
+# --- ЕНДПОІНТ ДЛЯ ПЕРЕГЛЯДУ ВСЬОГО КАТАЛОГУ В ТЕЛЕГРАМ ---
+@app.route('/catalog', methods=['GET'])
+def view_full_catalog_in_telegram():
+    headers = {
+        "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    try:
+        cat_list_url = "https://resell.codes/api/v1/gift-cards/categories"
+        cat_resp = requests.get(cat_list_url, headers=headers, timeout=10)
+        
+        if cat_resp.status_code != 200:
+            return "Error fetching categories from RSC", 500
+            
+        categories = cat_resp.json().get('categories', []) or cat_resp.json().get('data', []) or cat_resp.json()
+        report_lines = ["📋 <b>АКТУАЛЬНИЙ КАТАЛОГ RESELL.CODES</b>\n"]
+        
+        for cat in categories:
+            cat_id = cat.get('id') or cat.get('slug')
+            cat_name = cat.get('name', 'Category')
+            if not cat_id:
+                continue
+                
+            cards_url = f"https://resell.codes/api/v1/gift-cards/categories/{cat_id}/cards"
+            cards_resp = requests.get(cards_url, headers=headers, timeout=10)
+            if cards_resp.status_code == 200:
+                offers = cards_resp.json().get('offers', []) or cards_resp.json().get('cards', [])
+                if offers:
+                    report_lines.append(f"📂 <b>{cat_name}</b>")
+                    for offer in offers:
+                        title = offer.get('title', 'Unknown')
+                        price = offer.get('price', '—')
+                        stock = offer.get('stock', '—')
+                        card_id = offer.get('card_id') or offer.get('id')
+                        report_lines.append(f"  ▪️ {title} (ID: <code>{card_id}</code>)\n     Ціна: <b>${price}</b> | Залишок: <b>{stock}</b>")
+                    report_lines.append("")
+
+        full_message = "\n".join(report_lines)
+        
+        # Якщо повідомлення занадто довге для Telegram, розбиваємо або відправляємо як є
+        if len(full_message) > 4000:
+            chunks = [full_message[i:i+4000] for i in range(0, len(full_message), 4000)]
+            for chunk in chunks:
+                send_telegram(chunk)
+        else:
+            send_telegram(full_message)
+            
+        return "Catalog successfully sent to your Telegram!", 200
+        
+    except Exception as e:
+        err_text = f"Error generating catalog: {e}"
+        print(err_text)
+        return err_text, 500
+
+# Фоновий моніторинг змін цін
+def check_all_products_loop():
+    global previous_catalog
+    headers = {
+        "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    while True:
+        try:
+            cat_list_url = "https://resell.codes/api/v1/gift-cards/categories"
+            cat_resp = requests.get(cat_list_url, headers=headers, timeout=10)
+            
+            if cat_resp.status_code == 200:
+                categories = cat_resp.json().get('categories', []) or cat_resp.json().get('data', []) or cat_resp.json()
+                for cat in categories:
+                    cat_id = cat.get('id') or cat.get('slug')
+                    if not cat_id:
+                        continue
+                    
+                    cards_url = f"https://resell.codes/api/v1/gift-cards/categories/{cat_id}/cards"
+                    cards_resp = requests.get(cards_url, headers=headers, timeout=10)
+                    if cards_resp.status_code == 200:
+                        offers = cards_resp.json().get('offers', []) or cards_resp.json().get('cards', [])
+                        for offer in offers:
+                            item_id = str(offer.get('card_id') or offer.get('id'))
+                            title = offer.get('title', 'Unknown')
+                            price = offer.get('price')
+                            stock = offer.get('stock')
+                            
+                            if price is None:
+                                continue
+                                
+                            if item_id not in previous_catalog:
+                                previous_catalog[item_id] = {"price": price, "stock": stock, "title": title}
+                                continue
+                            
+                            old = previous_catalog[item_id]
+                            
+                            if old["price"] != price:
+                                diff = round(price - old["price"], 4)
+                                sign = "+" if diff > 0 else ""
+                                alert_msg = (
+                                    f"🚨 <b>ЗМІНА ЦІНИ НА RSC!</b>\n"
+                                    f"📦 <b>Товар:</b> {title}\n"
+                                    f"💰 <b>Стара ціна:</b> ${old['price']} ➡️ <b>Нова:</b> ${price} ({sign}{diff}$)"
+                                )
+                                send_telegram(alert_msg)
+                                old["price"] = price
+                                
+                            if old["stock"] != stock:
+                                alert_msg = (
+                                    f"📦 <b>ЗМІНА ЗАЛИШКУ НА RSC!</b>\n"
+                                    f"🏷 <b>Товар:</b> {title}\n"
+                                    f"📊 <b>Було:</b> {old['stock']} ➡️ <b>Стало:</b> {stock}"
+                                )
+                                send_telegram(alert_msg)
+                                old["stock"] = stock
+        except Exception as e:
+            print(f"Monitor loop error: {e}")
+            
+        time.sleep(300)
 
 @app.route('/webhook', methods=['POST', 'GET'])
 @app.route('/webhook/', methods=['POST', 'GET'])
@@ -56,12 +184,12 @@ def digiseller_webhook():
                 "Content-Type": "application/json"
             }
             
-            # КРОК 1: Динамічно отримуємо список категорій від API
             cat_list_url = "https://resell.codes/api/v1/gift-cards/categories"
             cat_resp = requests.get(cat_list_url, headers=headers, timeout=10)
             
             target_category = None
             target_card_id = None
+            current_card_price = None
             
             if cat_resp.status_code == 200:
                 categories = cat_resp.json().get('categories', []) or cat_resp.json().get('data', []) or cat_resp.json()
@@ -73,7 +201,6 @@ def digiseller_webhook():
                     if 'roblox' in cat_name or 'roblox' in cat_slug or str(cat_id) == 'roblox':
                         target_category = cat_id or cat_slug
                         
-                        # Отримуємо список карток всередині знайденої категорії
                         cards_url = f"https://resell.codes/api/v1/gift-cards/categories/{target_category}/cards"
                         cards_resp = requests.get(cards_url, headers=headers, timeout=10)
                         if cards_resp.status_code == 200:
@@ -83,18 +210,29 @@ def digiseller_webhook():
                                 offer_card_id = offer.get('card_id') or offer.get('id')
                                 if '50' in offer_title and 'robux' in offer_title:
                                     target_card_id = offer_card_id
+                                    current_card_price = offer.get('price')
                                     break
                         break
             
-            # Резервні значення, якщо динамічний пошук не спрацює
             if not target_category:
                 target_category = "roblox"
             if not target_card_id:
                 target_card_id = "50_robux"
 
-            print(f"Dynamic API Resolved -> Category: {target_category}, Card: {target_card_id}", flush=True)
+            print(f"Dynamic API Resolved -> Category: {target_category}, Card: {target_card_id}, Price: {current_card_price}", flush=True)
 
-            # КРОК 2: Відправляємо замовлення з реальними ID
+            # --- ІНДИВІДУАЛЬНИЙ ЗАХИСТ ЦІНИ ДЛЯ ЦЬОГО ТОВАРУ ---
+            allowed_max_price = MAX_PRICES.get(str(target_card_id), 1.00) # Дефолт $1.00 якщо немає в словнику
+            
+            if current_card_price is not None and current_card_price > allowed_max_price:
+                error_msg = (
+                    f"❌ <b>ЗАХИСТ СПРАЦЬОВАВ:</b> Товар <code>{target_card_id}</code>\n"
+                    f"💰 Ціна на RSC (${current_card_price}) вища за ваш ліміт (${allowed_max_price}). "
+                    f"Закупка заблокована!"
+                )
+                send_telegram(error_msg)
+                return "Error: Price is too high for this item, order paused.", 200
+
             rsc_url = "https://resell.codes/api/v1/gift-cards/order"
             payload = {
                 "category_id": target_category,
@@ -150,6 +288,9 @@ def digiseller_webhook():
         return "ERROR", 500
 
 if __name__ == '__main__':
+    monitor_thread = threading.Thread(target=check_all_products_loop, daemon=True)
+    monitor_thread.start()
+    
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
 
