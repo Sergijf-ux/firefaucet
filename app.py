@@ -32,7 +32,7 @@ def send_telegram(text):
     except Exception as e:
         print(f"Telegram error: {e}")
 
-# --- ЕНДПОІНТ КАТАЛОГУ (ПЕРЕКЛЮЧЕННЯ НА ПРАВИЛЬНИЙ ШЛЯХ) ---
+# --- ЕНДПОІНТ КАТАЛОГУ (ПОШУК ПРАВИЛЬНОГО ДОМЕНУ API) ---
 @app.route('/catalog', methods=['GET'])
 def view_full_catalog_in_telegram():
     headers = {
@@ -41,21 +41,35 @@ def view_full_catalog_in_telegram():
         "Accept": "application/json"
     }
     try:
-        # Пробуємо прямий ендпоінт каталогів gift-cards без зайвих версій вкладеності
-        test_url = "https://resell.codes/api/gift-cards"
-        response = requests.get(test_url, headers=headers, timeout=10)
+        # Перевіряємо різні можливі базові адреси API
+        candidate_urls = [
+            "https://api.resell.codes/v1/gift-cards",
+            "https://api.resell.codes/gift-cards",
+            "https://resell.codes/api/v1/gift-cards",
+            "https://resell.codes/api/giftcards"
+        ]
         
-        if response.status_code != 200:
-            test_url = "https://resell.codes/api/cards"
-            response = requests.get(test_url, headers=headers, timeout=10)
-
-        safe_text = str(response.text[:300]).replace('<', '&lt;').replace('>', '&gt;')
+        success_response = None
+        working_url = ""
         
-        debug_msg = f"🔍 <b>ДІАГНОСТИКА RSC API ( FIXED ):</b>\nСтатус: {response.status_code}\nВідповідь: <code>{safe_text}</code>"
-        send_telegram(debug_msg)
+        for url in candidate_urls:
+            resp = requests.get(url, headers=headers, timeout=10)
+            print(f"Testing URL {url} -> Status: {resp.status_code}")
+            if resp.status_code == 200:
+                success_response = resp
+                working_url = url
+                break
+                
+        if success_response and success_response.status_code == 200:
+            data = success_response.json()
+            debug_msg = f"✅ <b>ЗНАЙДЕНО РОБОЧИЙ URL!</b>\nАдреса: <code>{working_url}</code>\nДані: <code>{str(data)[:200]}</code>"
+            send_telegram(debug_msg)
+            return "Catalog endpoint found and working!", 200
+        else:
+            debug_msg = "❌ <b>ЖОДЕН ІЗ ВАРІАНТІВ API НЕ ВІДПОВІВ 200 OK!</b> Перевірте правильність токена або документацію постачальника."
+            send_telegram(debug_msg)
+            return "All API paths returned 404 or error.", 500
             
-        return "Diagnostic sent to Telegram!", 200
-        
     except Exception as e:
         err_text = f"❌ Помилка: {e}"
         send_telegram(err_text)
@@ -69,7 +83,7 @@ def check_all_products_loop():
                 "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
                 "Content-Type": "application/json"
             }
-            resp = requests.get("https://resell.codes/api/gift-cards", headers=headers, timeout=10)
+            resp = requests.get("https://api.resell.codes/v1/gift-cards", headers=headers, timeout=10)
             print(f"Monitor check status: {resp.status_code}")
         except Exception as e:
             print(f"Monitor loop error: {e}")
@@ -108,7 +122,8 @@ def digiseller_webhook():
                 "Accept": "application/json"
             }
             
-            rsc_url = "https://resell.codes/api/orders"
+            # Використовуємо потенційний робочий шлях для замовлень
+            rsc_url = "https://api.resell.codes/v1/orders"
             payload = {
                 "sku": "roblox-gift-card-50-robux",
                 "quantity": req_quantity
@@ -122,7 +137,7 @@ def digiseller_webhook():
                 if codes:
                     issued_codes = codes
             else:
-                send_telegram(f"❌ <b>Помилка API:</b> {response.text}")
+                send_telegram(f"❌ <b>Помилка API закупівлі:</b> статус {response.status_code}, текст: {response.text}")
         except Exception as err:
             print(f"Purchase error: {err}")
 
@@ -138,7 +153,7 @@ def digiseller_webhook():
             send_telegram(msg)
             return final_output_text, 200
         else:
-            send_telegram(f"❌ <b>ПОМИЛКА ВИДАЧІ КЛЮЧА!</b> Товар: {product_id}")
+            send_telegram(f"❌ <b>ПОМИЛКА ВИДАЧІ КЛЮЧА!</b> Товар: {product_id} (API не віддав ключі)")
             return "Error issuing codes.", 200
 
     except Exception as e:
