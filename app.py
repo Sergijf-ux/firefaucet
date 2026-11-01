@@ -27,7 +27,8 @@ def send_telegram(text):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
-        requests.post(url, json=payload, timeout=10)
+        resp = requests.post(url, json=payload, timeout=10)
+        print(f"Telegram status: {resp.status_code}, response: {resp.text}")
     except Exception as e:
         print(f"Telegram error: {e}")
 
@@ -39,11 +40,13 @@ def view_full_catalog_in_telegram():
         "Content-Type": "application/json"
     }
     try:
-        # Перевіряємо базовий шлях API, щоб побачити точну відповідь сервера RSC
         test_url = "https://resell.codes/api/v1/"
         response = requests.get(test_url, headers=headers, timeout=10)
         
-        debug_msg = f"🔍 <b>ДІАГНОСТИКА RSC API:</b>\nСтатус: {response.status_code}\nВідповідь: <code>{response.text[:300]}</code>"
+        # Очищаємо текст від можливих проблемних символів для HTML-парсера
+        safe_text = str(response.text[:300]).replace('<', '&lt;').replace('>', '&gt;')
+        
+        debug_msg = f"🔍 <b>ДІАГНОСТИКА RSC API:</b>\nСтатус: {response.status_code}\nВідповідь: <code>{safe_text}</code>"
         send_telegram(debug_msg)
             
         return "Diagnostic sent to Telegram!", 200
