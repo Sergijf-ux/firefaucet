@@ -1,94 +1,97 @@
 import os
 import time
+import re
 import requests
-import threading
-from flask import Flask, request
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 app.url_map.strict_slashes = False
 
-# --- КОНФІГУРАЦІЯ ---
+# --- CONFIGURATION ---
 TELEGRAM_BOT_TOKEN = "8807171182:AAEewfuvrhwHYRE0N3Xc7_IjGUpFsL_TgqY"
 TELEGRAM_CHAT_ID = "8508676381"
 RESELL_CODES_API_KEY = "rsc_live_b61d7b4894461371f7ed9b636752c35ac703a6d5c4625cda"
+RSC_BASE_URL = "https://resell.codes/api/v1"
 
-# --- ЛІМІТИ ЦІН ДЛЯ ЗАКУПІВЛІ ---
-MAX_PRICES = {
-    "roblox": 1.00,
-}
-
-previous_catalog = {}
-
-@app.route('/')
-def home():
-    return "Bot is running on Render!", 200
+TARGET_PRODUCT_ID = "6349263"
+MAX_AMOUNT_USD = 1.00
 
 def send_telegram(text):
+    """Send notifications to the administrator in Telegram."""
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
-        resp = requests.post(url, json=payload, timeout=10)
-        print(f"Telegram status: {resp.status_code}, response: {resp.text}")
+        requests.post(url, json=payload, timeout=10)
     except Exception as e:
-        print(f"Telegram error: {e}")
+        print(f"Telegram error: {e}", flush=True)
 
-# --- ЕНДПОІНТ КАТАЛОГУ (ВИПРАВЛЕНИЙ ЗАГОЛОВОК X-API-KEY) ---
-@app.route('/catalog', methods=['GET'])
-def view_full_catalog_in_telegram():
+def execute_rsc_purchase(product_type, id_1, id_2, quantity=1):
+    """Create an order in ReSellCodes and poll for status."""
     headers = {
-        "X-API-Key": RESELL_CODES_API_KEY,
+        "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
         "Content-Type": "application/json",
         "Accept": "application/json"
     }
+    
+    if product_type == "game_key":
+        order_url = f"{RSC_BASE_URL}/game-keys/order"
+        payload = {"game_id": id_1, "key_id": id_2, "quantity": quantity}
+        codes_key = "keys"
+    elif product_type == "gift_card":
+        order_url = f"{RSC_BASE_URL}/gift-cards/order"
+        payload = {"category_id": id_1, "card_id": id_2, "quantity": quantity}
+        codes_key = "codes"
+    else:
+        return None, "Unknown product type"
+
     try:
-        urls_to_test = [
-            "https://resell.codes/api/v1/products",
-            "https://resell.codes/api/products",
-            "https://resell.codes/api/v1/items",
-            "https://resell.codes/api/items"
-        ]
-        
-        success_resp = None
-        working_url = ""
-        
-        for url in urls_to_test:
-            resp = requests.get(url, headers=headers, timeout=10)
-            print(f"Testing {url} -> Status: {resp.status_code}")
-            if resp.status_code == 200:
-                success_resp = resp
-                working_url = url
-                break
-                
-        if success_resp and success_resp.status_code == 200:
-            data = success_resp.json()
-            send_telegram(f"✅ <b>ЗНАЙДЕНО РОБОЧИЙ ЕНДПОІНТ!</b>\nURL: <code>{working_url}</code>\nДані: <code>{str(data)[:200]}</code>")
-            return "Catalog endpoint working!", 200
-        else:
-            send_telegram("❌ <b>ПОМИЛКА:</b> Всі тестові шляхи повернули помилку або 404 навіть із заголовком X-API-Key.")
-            return "All paths returned error.", 500
-            
+        response = requests.post(order_url, json=payload, headers=headers, timeout=15)
+        res_data = response.json()
     except Exception as e:
-        err_text = f"❌ Помилка: {e}"
-        send_telegram(err_text)
-        return err_text, 500
+        return None, f"Connection error during order: {e}"
 
-# --- ЦИКЛ МОНІТОРИНГУ ---
-def check_all_products_loop():
-    while True:
+    if response.status_code != 200:
+        err_msg = res_data.get("error", {}).get("message", response.text)
+        return None, f"API error (HTTP {response.status_code}): {err_msg}"
+
+    order_number = res_data.get("number")
+    if not order_number:
+        return None, "RSC server did not return an order number (number)"
+
+    poll_url = f"{RSC_BASE_URL}/orders/{order_number}"
+    max_attempts = 40  # ~120 seconds waiting
+    
+    for _ in range(max_attempts):
+        time.sleep(3)
         try:
-            headers = {
-                "X-API-Key": RESELL_CODES_API_KEY,
-                "Content-Type": "application/json"
-            }
-            requests.get("https://resell.codes/api/v1/products", headers=headers, timeout=10)
-        except Exception as e:
-            print(f"Monitor loop error: {e}")
-        time.sleep(300)
+            poll_resp = requests.get(poll_url, headers=headers, timeout=10)
+            poll_data = poll_resp.json()
+        except Exception:
+            continue
 
-# --- ВЕБХУК DIGISELLER (ПОВНА ЛОГІКА ВИДАЧІ КЛЮЧІВ ПОКУПЦЮ) ---
+        status = poll_data.get("status")
+        
+        if status == "completed":
+            items = poll_data.get(codes_key, [])
+            if items:
+                return "\n".join(items), None
+            return None, "Order completed, but the keys list is empty"
+            
+        if status in ["failed", "refund"]:
+            fail_reason = poll_data.get("fail_code", "unknown_fail")
+            reason_text = poll_data.get("status_reason", "")
+            return None, f"Order canceled/refunded. Reason: {fail_reason} ({reason_text})"
+
+    return None, "Order execution timeout (Polling timeout)"
+
+@app.route('/')
+def home():
+    return "Digiseller-RSC Dynamic Integration Service is running successfully!", 200
+
 @app.route('/webhook', methods=['POST', 'GET'])
 @app.route('/webhook/', methods=['POST', 'GET'])
 def digiseller_webhook():
+    """Dynamic webhook handler for Digiseller."""
     try:
         args_data = request.args.to_dict()
         form_data = request.form.to_dict()
@@ -97,68 +100,77 @@ def digiseller_webhook():
         
         merged = {**args_data, **form_data, **json_data, **values_data}
 
-        order_id = merged.get('ID_I') or merged.get('id_i') or merged.get('inv_id') or merged.get('order_id') or merged.get('inv') or 'manual_check'
-        product_id = str(merged.get('ID_D') or merged.get('id_d') or merged.get('id_goods') or merged.get('goods_id') or merged.get('product_id') or '6223586')
-
-        if product_id == '—':
-            product_id = '6223586'
-
-        raw_qty = merged.get('cnt') or merged.get('quantity') or merged.get('amount') or merged.get('qty') or 1
-        try:
-            req_quantity = int(raw_qty)
-        except ValueError:
-            req_quantity = 1
-
-        issued_codes = []
+        product_id = str(merged.get('ID_G') or merged.get('id_g') or merged.get('ID_I') or merged.get('id_i') or merged.get('inv_id') or merged.get('order_id') or '')
+        invoice_id = merged.get('ID_I') or merged.get('id_i') or merged.get('inv_id') or merged.get('order_id') or 'UNKNOWN'
+        product_name = merged.get('name') or merged.get('goods_name') or ''
         
         try:
-            headers = {
-                "X-API-Key": RESELL_CODES_API_KEY,
-                "Content-Type": "application/json",
-                "Accept": "application/json"
-            }
-            
-            rsc_url = "https://resell.codes/api/v1/orders"
-            payload = {
-                "sku": "roblox-gift-card-50-robux",
-                "quantity": req_quantity
-            }
-            
-            response = requests.post(rsc_url, json=payload, headers=headers, timeout=15)
-            
-            if response.status_code == 200:
-                resp_data = response.json()
-                codes = resp_data.get('codes', []) or resp_data.get('keys', [])
-                if codes:
-                    issued_codes = codes
-            else:
-                send_telegram(f"❌ <b>Помилка закупівлі API:</b> статус {response.status_code}, текст: {response.text}")
-        except Exception as err:
-            print(f"Purchase error: {err}")
+            amount = float(merged.get('Amount') or merged.get('amount') or 0)
+        except ValueError:
+            amount = 0.0
 
-        final_output_text = "\n".join(issued_codes) if issued_codes else ""
+        raw_qty = merged.get('cnt') or merged.get('quantity') or 1
+        try:
+            quantity = int(raw_qty)
+        except ValueError:
+            quantity = 1
 
-        if final_output_text:
-            msg = (
-                f"🛒 <b>УСПІШНЕ ЗАМОВЛЕННЯ!</b>\n\n"
-                f"📦 <b>ID товару:</b> <code>{product_id}</code>\n"
-                f"🆔 <b>Замовлення:</b> <code>{order_id}</code>\n"
-                f"🔑 <b>Ключі для покупця:</b>\n<code>{final_output_text}</code>"
+        # 1. Validate Product ID
+        if product_id and product_id != TARGET_PRODUCT_ID:
+            print(f"Ignored: Product ID {product_id} does not match target {TARGET_PRODUCT_ID}", flush=True)
+            return jsonify({"status": "ignored", "reason": "Wrong product ID"}), 200
+
+        # 2. Validate Price Limit ($1.00 max)
+        if amount > MAX_AMOUNT_USD:
+            print(f"Rejected: Amount {amount} USD exceeds limit {MAX_AMOUNT_USD} USD", flush=True)
+            send_telegram(f"⚠️ <b>Order rejected due to price limit!</b>\nInvoice: <code>{invoice_id}</code>\nAmount: {amount} USD (Max: {MAX_AMOUNT_USD} USD)")
+            return jsonify({"status": "rejected", "reason": "Amount exceeds limit"}), 200
+
+        # Dynamic parameter determination based on product name
+        product_type = "gift_card"
+        id_1 = "telegram_stars"
+        id_2 = "50_stars"
+
+        name_lower = product_name.lower()
+        if "robux" in name_lower or "roblox" in name_lower:
+            id_1 = "robux_ru"
+            id_2 = "199_robux"
+        elif "stars" in name_lower or "telegram" in name_lower:
+            id_1 = "telegram_stars"
+            numbers = re.findall(r'\d+', product_name)
+            if numbers:
+                id_2 = f"{numbers[0]}_stars"
+
+        send_telegram(f"📥 <b>New order received!</b>\nInvoice: <code>{invoice_id}</code>\nProduct: {product_name}\nAmount: {amount} USD\nRSC Params: {id_1} / {id_2}\nPurchasing...")
+
+        issued_keys, error = execute_rsc_purchase(product_type, id_1, id_2, quantity)
+
+        if error:
+            alert_msg = (
+                f"🚨 <b>AUTOMATED PURCHASE ERROR!</b>\n\n"
+                f"🆔 <b>Invoice:</b> <code>{invoice_id}</code>\n"
+                f"📦 <b>Product:</b> {product_name}\n"
+                f"❌ <b>Error:</b> {error}\n\n"
+                f"⚠️ <i>Fulfill the order manually!</i>"
             )
-            send_telegram(msg)
-            return final_output_text, 200
-        else:
-            send_telegram(f"❌ <b>ПОМИЛКА ВИДАЧІ КЛЮЧА!</b> Товар: {product_id} (API не віддав ключі)")
-            return "Error issuing codes.", 200
+            send_telegram(alert_msg)
+            return "Error processing order via API. Manual fulfillment required.", 200
+
+        success_msg = (
+            f"🛒 <b>SUCCESSFUL AUTO-ORDER!</b>\n\n"
+            f"🆔 <b>Digiseller Invoice:</b> <code>{invoice_id}</code>\n"
+            f"🔑 <b>Issued Codes:</b>\n<code>{issued_keys}</code>"
+        )
+        send_telegram(success_msg)
+        
+        return issued_keys, 200
 
     except Exception as e:
-        print(f"Server error: {e}", flush=True)
-        return "ERROR", 500
+        print(f"Webhook internal exception: {e}", flush=True)
+        send_telegram(f"🔥 <b>Server internal error:</b> {str(e)}")
+        return "INTERNAL ERROR", 500
 
 if __name__ == '__main__':
-    monitor_thread = threading.Thread(target=check_all_products_loop, daemon=True)
-    monitor_thread.start()
-    
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
 
