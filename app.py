@@ -38,8 +38,8 @@ def get_rsc_telegram_stars_pricing():
         print(f"Failed to fetch telegram stars pricing: {e}", flush=True)
     return None
 
-def get_rsc_gift_cards_catalog(category_id="roblox_global"):
-    """Запит до API RSC для отримання актуального каталогу карток (Roblox)."""
+def get_rsc_gift_cards_catalog(category_id):
+    """Запит до API RSC для отримання актуального каталогу карток (наприклад, roblox_global або pubg_mobile)."""
     headers = {
         "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
         "Accept": "application/json"
@@ -130,9 +130,10 @@ def home():
 
 @app.route('/catalog', methods=['GET'])
 def view_catalog():
-    """Виводить каталог у браузер і надсилає повний звіт у Telegram."""
+    """Виводить зведені каталоги у браузер і надсилає звіт у Telegram."""
     stars_pricing = get_rsc_telegram_stars_pricing()
     roblox_cards = get_rsc_gift_cards_catalog("roblox_global")
+    pubg_cards = get_rsc_gift_cards_catalog("pubg_mobile")
     
     star_price = "N/A"
     if stars_pricing and isinstance(stars_pricing, dict):
@@ -142,27 +143,31 @@ def view_catalog():
     if roblox_cards and isinstance(roblox_cards, dict) and "offers" in roblox_cards:
         for offer in roblox_cards["offers"]:
             roblox_info += f"• <b>{offer.get('name')}:</b> ${offer.get('price_usd')} (Stock: {offer.get('stock')})\n"
-    if not roblox_info:
-        roblox_info = "• Дані недоступні\n"
             
+    pubg_info = ""
+    if pubg_cards and isinstance(pubg_cards, dict) and "offers" in pubg_cards:
+        for offer in pubg_cards["offers"]:
+            pubg_info += f"• <b>{offer.get('name')}:</b> ${offer.get('price_usd')} (Stock: {offer.get('stock')})\n"
+
     tg_msg = (
         f"📊 <b>ПОТОЧНИЙ КАТАЛОГ RSC</b>\n\n"
-        f"⭐ <b>Telegram Stars:</b>\n"
-        f"• Ціна за 1 зірку: <code>${star_price}</code>\n\n"
-        f"🎮 <b>Roblox Gift Cards:</b>\n{roblox_info}"
+        f"⭐ <b>Telegram Stars:</b>\n• Ціна за 1 зірку: <code>${star_price}</code>\n\n"
+        f"🎮 <b>Roblox Gift Cards:</b>\n{roblox_info or '• Немає даних\n'}\n"
+        f"🎯 <b>PUBG Mobile:</b>\n{pubg_info or '• Немає даних\n'}"
     )
     
     send_telegram(tg_msg)
     
     return jsonify({
         "telegram_stars_pricing": stars_pricing,
-        "roblox_gift_cards": roblox_cards
+        "roblox_gift_cards": roblox_cards,
+        "pubg_mobile": pubg_cards
     }), 200
 
 @app.route('/webhook', methods=['POST', 'GET'])
 @app.route('/webhook/', methods=['POST', 'GET'])
 def digiseller_webhook():
-    """Обробник вебхуків Digiseller з динамічними лімітами."""
+    """Обробник вебхуків Digiseller з підтримкою Telegram Stars, Roblox та PUBG Mobile."""
     try:
         args_data = request.args.to_dict()
         form_data = request.form.to_dict()
@@ -201,7 +206,33 @@ def digiseller_webhook():
         max_allowed_usd = 1.50
 
         name_lower = product_name.lower()
-        if "robux" in name_lower or "roblox" in name_lower:
+        if "pubg" in name_lower or "uc" in name_lower:
+            product_type = "gift_card"
+            id_1 = "pubg_mobile"
+            numbers = re.findall(r'\d+', product_name)
+            if numbers:
+                id_2 = f"{numbers[0]}_uc"
+            else:
+                id_2 = "60_uc"
+            
+            # Динамічна перевірка ціни PUBG Mobile за каталогом + 20%
+            pubg_catalog = get_rsc_gift_cards_catalog("pubg_mobile")
+            card_price = None
+            if pubg_catalog and isinstance(pubg_catalog, dict) and "offers" in pubg_catalog:
+                for offer in pubg_catalog["offers"]:
+                    if offer.get("card_id") == id_2:
+                        try:
+                            card_price = float(offer.get("price_usd"))
+                        except (ValueError, TypeError):
+                            pass
+                        break
+            
+            if card_price:
+                max_allowed_usd = card_price * 1.20
+            else:
+                max_allowed_usd = 500.00
+
+        elif "robux" in name_lower or "roblox" in name_lower:
             product_type = "gift_card"
             id_1 = "roblox_global"
             numbers = re.findall(r'\d+', product_name)
@@ -210,7 +241,6 @@ def digiseller_webhook():
             else:
                 id_2 = "50_robux"
             
-            # Динамічна перевірка ціни Роблокса за каталогом + 20%
             roblox_catalog = get_rsc_gift_cards_catalog("roblox_global")
             card_price = None
             if roblox_catalog and isinstance(roblox_catalog, dict) and "offers" in roblox_catalog:
