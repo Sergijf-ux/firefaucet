@@ -24,8 +24,8 @@ def send_telegram(text):
     except Exception as e:
         print(f"Telegram error: {e}", flush=True)
 
-def get_rsc_telegram_stars_catalog():
-    """Динамічний запит до API RSC для отримання актуального каталогу цін та пачок зірок."""
+def get_rsc_telegram_stars_pricing():
+    """Запит до API RSC для отримання актуальної ціни за зірку."""
     headers = {
         "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
         "Accept": "application/json"
@@ -33,10 +33,24 @@ def get_rsc_telegram_stars_catalog():
     try:
         response = requests.get(f"{RSC_BASE_URL}/telegram/stars", headers=headers, timeout=10)
         if response.status_code == 200:
+            return response.json()
+    except Exception as e:
+        print(f"Failed to fetch telegram stars pricing: {e}", flush=True)
+    return None
+
+def get_rsc_gift_cards_catalog(category_id="roblox_global"):
+    """Запит до API RSC для отримання актуального каталогу карток у категорії (наприклад, Roblox)."""
+    headers = {
+        "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
+        "Accept": "application/json"
+    }
+    try:
+        response = requests.get(f"{RSC_BASE_URL}/gift-cards/categories/{category_id}/cards", headers=headers, timeout=10)
+        if response.status_code == 200:
             data = response.json()
             return data.get("data", data)
     except Exception as e:
-        print(f"Failed to fetch RSC catalog: {e}", flush=True)
+        print(f"Failed to fetch gift cards catalog for {category_id}: {e}", flush=True)
     return None
 
 def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
@@ -116,18 +130,14 @@ def home():
 
 @app.route('/catalog', methods=['GET'])
 def view_catalog():
-    """Виводить актуальний каталог Telegram Stars та їхні ціни напряму з API RSC у браузері."""
-    headers = {
-        "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
-        "Accept": "application/json"
-    }
-    try:
-        response = requests.get(f"{RSC_BASE_URL}/telegram/stars", headers=headers, timeout=10)
-        if response.status_code == 200:
-            return response.json(), 200
-        return jsonify({"error": "Failed to fetch catalog", "status_code": response.status_code}), 500
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    """Виводить зведені актуальні дані каталогів Telegram Stars та Roblox Gift Cards у браузері."""
+    stars_pricing = get_rsc_telegram_stars_pricing()
+    roblox_cards = get_rsc_gift_cards_catalog("roblox_global")
+    
+    return jsonify({
+        "telegram_stars_pricing": stars_pricing,
+        "roblox_gift_cards": roblox_cards
+    }), 200
 
 @app.route('/webhook', methods=['POST', 'GET'])
 @app.route('/webhook/', methods=['POST', 'GET'])
@@ -179,7 +189,7 @@ def digiseller_webhook():
                 id_2 = f"{numbers[0]}_robux"
             else:
                 id_2 = "50_robux"
-            max_allowed_usd = 10.00
+            max_allowed_usd = 15.00  # Безпечний ліміт для Роблокса
             
         elif "stars" in name_lower or "telegram" in name_lower:
             product_type = "telegram_stars"
@@ -187,22 +197,20 @@ def digiseller_webhook():
             if numbers:
                 quantity = int(numbers[0])
             
-            catalog = get_rsc_telegram_stars_catalog()
-            api_matched_price = None
+            # Отримуємо свіжу ціну за зірку з API RSC
+            pricing_data = get_rsc_telegram_stars_pricing()
+            price_per_star = 0.0152250
             
-            if catalog and isinstance(catalog, list):
-                for item in catalog:
-                    if item.get("stars") == quantity or item.get("quantity") == quantity:
-                        api_matched_price = float(item.get("price_usd", item.get("price", 0)))
-                        break
+            if pricing_data and isinstance(pricing_data, dict) and "price_per_star" in pricing_data:
+                try:
+                    price_per_star = float(pricing_data["price_per_star"])
+                except (ValueError, TypeError):
+                    pass
 
-            if api_matched_price:
-                max_allowed_usd = api_matched_price * 1.20
-            else:
-                base_price_per_star = 0.0155
-                max_allowed_usd = (quantity * base_price_per_star) * 1.25
-                if max_allowed_usd < 1.50:
-                    max_allowed_usd = 1.50
+            calculated_cost = quantity * price_per_star
+            max_allowed_usd = calculated_cost * 1.20
+            if max_allowed_usd < 1.00:
+                max_allowed_usd = 1.00
 
         if amount > max_allowed_usd:
             print(f"Rejected: Amount {amount} USD exceeds limit {max_allowed_usd} USD for product {product_name}", flush=True)
@@ -245,7 +253,6 @@ def digiseller_webhook():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
-
 
 
 
