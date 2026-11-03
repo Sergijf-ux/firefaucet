@@ -38,8 +38,22 @@ def get_rsc_telegram_stars_pricing():
         print(f"Failed to fetch telegram stars pricing: {e}", flush=True)
     return None
 
+def get_rsc_telegram_premium_pricing():
+    """Запит до API RSC для отримання тарифів Telegram Premium."""
+    headers = {
+        "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
+        "Accept": "application/json"
+    }
+    try:
+        response = requests.get(f"{RSC_BASE_URL}/telegram/premium", headers=headers, timeout=10)
+        if response.status_code == 200:
+            return response.json()
+    except Exception as e:
+        print(f"Failed to fetch telegram premium pricing: {e}", flush=True)
+    return None
+
 def get_rsc_gift_cards_catalog(category_id):
-    """Запит до API RSC для отримання актуального каталогу карток (наприклад, roblox_global або pubg_mobile)."""
+    """Запит до API RSC для отримання актуального каталогу карток."""
     headers = {
         "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
         "Accept": "application/json"
@@ -65,6 +79,11 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
         order_url = f"{RSC_BASE_URL}/telegram/stars/buy"
         username = extra_data.get("telegram_username", "durov") if extra_data else "durov"
         payload = {"telegram_username": username, "quantity": quantity}
+    elif product_type == "telegram_premium":
+        order_url = f"{RSC_BASE_URL}/telegram/premium/buy"
+        username = extra_data.get("telegram_username", "durov") if extra_data else "durov"
+        months = extra_data.get("months", 3) if extra_data else 3
+        payload = {"telegram_username": username, "months": months}
     elif product_type == "game_key":
         order_url = f"{RSC_BASE_URL}/game-keys/order"
         payload = {"game_id": id_1, "key_id": id_2, "quantity": quantity}
@@ -86,13 +105,12 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
         err_msg = res_data.get("error", {}).get("message", response.text)
         return None, f"API error (HTTP {response.status_code}): {err_msg}"
 
-    if product_type == "telegram_stars":
+    if product_type in ["telegram_stars", "telegram_premium"]:
         order_status = res_data.get("status")
         if order_status in ["processing", "completed"]:
             charged = res_data.get("charged_usd", "0")
             uname = res_data.get("telegram_username")
-            st_count = res_data.get("stars")
-            return f"Telegram Stars successfully sent!\nUsername: @{uname}\nStars: {st_count}\nCharged: ${charged}", None
+            return f"Telegram order successfully processed!\nUsername: @{uname}\nCharged: ${charged}", None
         else:
             return None, f"Telegram order status: {order_status}, Reason: {res_data.get('status_reason')}"
 
@@ -132,12 +150,18 @@ def home():
 def view_catalog():
     """Виводить зведені каталоги у браузер і надсилає звіт у Telegram."""
     stars_pricing = get_rsc_telegram_stars_pricing()
+    premium_pricing = get_rsc_telegram_premium_pricing()
     roblox_cards = get_rsc_gift_cards_catalog("roblox_global")
     pubg_cards = get_rsc_gift_cards_catalog("pubg_mobile")
     
     star_price = "N/A"
     if stars_pricing and isinstance(stars_pricing, dict):
         star_price = stars_pricing.get("price_per_star", "N/A")
+
+    premium_info = ""
+    if premium_pricing and isinstance(premium_pricing, dict) and "plans" in premium_pricing:
+        for plan in premium_pricing["plans"]:
+            premium_info += f"• <b>{plan.get('months')} міс.:</b> ${plan.get('price_usd')}\n"
     
     roblox_info = ""
     if roblox_cards and isinstance(roblox_cards, dict) and "offers" in roblox_cards:
@@ -152,6 +176,7 @@ def view_catalog():
     tg_msg = (
         f"📊 <b>ПОТОЧНИЙ КАТАЛОГ RSC</b>\n\n"
         f"⭐ <b>Telegram Stars:</b>\n• Ціна за 1 зірку: <code>${star_price}</code>\n\n"
+        f"💎 <b>Telegram Premium:</b>\n{premium_info or '• Немає даних\n'}\n"
         f"🎮 <b>Roblox Gift Cards:</b>\n{roblox_info or '• Немає даних\n'}\n"
         f"🎯 <b>PUBG Mobile:</b>\n{pubg_info or '• Немає даних\n'}"
     )
@@ -160,6 +185,7 @@ def view_catalog():
     
     return jsonify({
         "telegram_stars_pricing": stars_pricing,
+        "telegram_premium_pricing": premium_pricing,
         "roblox_gift_cards": roblox_cards,
         "pubg_mobile": pubg_cards
     }), 200
@@ -167,7 +193,7 @@ def view_catalog():
 @app.route('/webhook', methods=['POST', 'GET'])
 @app.route('/webhook/', methods=['POST', 'GET'])
 def digiseller_webhook():
-    """Обробник вебхуків Digiseller з підтримкою Telegram Stars, Roblox та PUBG Mobile."""
+    """Обробник вебхуків Digiseller з підтримкою Telegram Stars, Telegram Premium, Roblox та PUBG Mobile."""
     try:
         args_data = request.args.to_dict()
         form_data = request.form.to_dict()
@@ -203,10 +229,39 @@ def digiseller_webhook():
         product_type = "telegram_stars"
         id_1 = None
         id_2 = None
+        extra_data = {}
         max_allowed_usd = 1.50
 
         name_lower = product_name.lower()
-        if "pubg" in name_lower or "uc" in name_lower:
+        
+        if "premium" in name_lower or "премиум" in name_lower:
+            product_type = "telegram_premium"
+            months = 3
+            if "6" in name_lower:
+                months = 6
+            elif "12" in name_lower or "год" in name_lower or "рік" in name_lower:
+                months = 12
+            
+            extra_data["months"] = months
+            
+            # Динамічна перевірка ціни Telegram Premium за каталогом + 20%
+            prem_pricing = get_rsc_telegram_premium_pricing()
+            plan_price = None
+            if prem_pricing and isinstance(prem_pricing, dict) and "plans" in prem_pricing:
+                for plan in prem_pricing["plans"]:
+                    if plan.get("months") == months:
+                        try:
+                            plan_price = float(plan.get("price_usd"))
+                        except (ValueError, TypeError):
+                            pass
+                        break
+            
+            if plan_price:
+                max_allowed_usd = plan_price * 1.20
+            else:
+                max_allowed_usd = 50.00
+
+        elif "pubg" in name_lower or "uc" in name_lower:
             product_type = "gift_card"
             id_1 = "pubg_mobile"
             numbers = re.findall(r'\d+', product_name)
@@ -215,7 +270,6 @@ def digiseller_webhook():
             else:
                 id_2 = "60_uc"
             
-            # Динамічна перевірка ціни PUBG Mobile за каталогом + 20%
             pubg_catalog = get_rsc_gift_cards_catalog("pubg_mobile")
             card_price = None
             if pubg_catalog and isinstance(pubg_catalog, dict) and "offers" in pubg_catalog:
@@ -287,7 +341,7 @@ def digiseller_webhook():
 
         send_telegram(f"📥 <b>New order received!</b>\nInvoice: <code>{invoice_id}</code>\nProduct: {product_name}\nType: {product_type}\nAmount: {amount} USD\nPurchasing...")
 
-        extra_data = {"telegram_username": telegram_username}
+        extra_data["telegram_username"] = telegram_username
         issued_keys, error = execute_rsc_purchase(product_type, id_1, id_2, quantity, extra_data=extra_data)
 
         if error:
