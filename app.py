@@ -14,7 +14,6 @@ RESELL_CODES_API_KEY = "rsc_live_b61d7b4894461371f7ed9b636752c35ac703a6d5c4625cd
 RSC_BASE_URL = "https://resell.codes/api/v1"
 
 TARGET_PRODUCT_ID = "6349263"
-MAX_AMOUNT_USD = 1.00
 
 def send_telegram(text):
     """Send notifications to the administrator in Telegram."""
@@ -25,6 +24,23 @@ def send_telegram(text):
     except Exception as e:
         print(f"Telegram error: {e}", flush=True)
 
+def get_rsc_telegram_stars_catalog():
+    """Динамічний запит до API RSC для отримання актуального каталогу цін та пачок зірок."""
+    headers = {
+        "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
+        "Accept": "application/json"
+    }
+    try:
+        # Запит до ендпоінту каталогу Telegram Stars в RSC
+        response = requests.get(f"{RSC_BASE_URL}/telegram/stars", headers=headers, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            # Повертає список або словник продуктів/пачок з API
+            return data.get("data", data)
+    except Exception as e:
+        print(f"Failed to fetch RSC catalog: {e}", flush=True)
+    return None
+
 def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
     """Create an order in ReSellCodes and poll for status."""
     headers = {
@@ -33,19 +49,14 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
         "Accept": "application/json"
     }
     
-    # 1. Telegram Stars
     if product_type == "telegram_stars":
         order_url = f"{RSC_BASE_URL}/telegram/stars/buy"
         username = extra_data.get("telegram_username", "durov") if extra_data else "durov"
         payload = {"telegram_username": username, "quantity": quantity}
-    
-    # 2. Game Keys
     elif product_type == "game_key":
         order_url = f"{RSC_BASE_URL}/game-keys/order"
         payload = {"game_id": id_1, "key_id": id_2, "quantity": quantity}
         codes_key = "keys"
-        
-    # 3. Gift Cards (Roblox и др.)
     elif product_type == "gift_card":
         order_url = f"{RSC_BASE_URL}/gift-cards/order"
         payload = {"category_id": id_1, "card_id": id_2, "quantity": quantity}
@@ -63,7 +74,6 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
         err_msg = res_data.get("error", {}).get("message", response.text)
         return None, f"API error (HTTP {response.status_code}): {err_msg}"
 
-    # Telegram Stars обрабатываются мгновенно
     if product_type == "telegram_stars":
         order_status = res_data.get("status")
         if order_status in ["processing", "completed"]:
@@ -79,7 +89,7 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
         return None, "RSC server did not return an order number (number)"
 
     poll_url = f"{RSC_BASE_URL}/orders/{order_number}"
-    max_attempts = 40  # ~120 seconds waiting
+    max_attempts = 40
     
     for _ in range(max_attempts):
         time.sleep(3)
@@ -90,13 +100,11 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
             continue
 
         status = poll_data.get("status")
-        
         if status == "completed":
             items = poll_data.get(codes_key, [])
             if items:
                 return "\n".join(items), None
             return None, "Order completed, but the items list is empty"
-            
         if status in ["failed", "refund"]:
             fail_reason = poll_data.get("fail_code", "unknown_fail")
             reason_text = poll_data.get("status_reason", "")
@@ -140,39 +148,57 @@ def digiseller_webhook():
             merged.get('telegram_username') or merged.get('text1') or ''
         ).strip().lstrip('@')
 
-        # 1. Validate Product ID
         if product_id and product_id != TARGET_PRODUCT_ID:
             print(f"Ignored: Product ID {product_id} does not match target {TARGET_PRODUCT_ID}", flush=True)
             return jsonify({"status": "ignored", "reason": "Wrong product ID"}), 200
 
-        # 2. Validate Price Limit ($1.00 max)
-        if amount > MAX_AMOUNT_USD:
-            print(f"Rejected: Amount {amount} USD exceeds limit {MAX_AMOUNT_USD} USD", flush=True)
-            send_telegram(f"⚠️ <b>Order rejected due to price limit!</b>\nInvoice: <code>{invoice_id}</code>\nAmount: {amount} USD (Max: {MAX_AMOUNT_USD} USD)")
-            return jsonify({"status": "rejected", "reason": "Amount exceeds limit"}), 200
-
-        # Динамічне визначення продукту (Telegram Stars або Roblox)
         product_type = "telegram_stars"
         id_1 = None
         id_2 = None
+        max_allowed_usd = 1.50
 
         name_lower = product_name.lower()
         if "robux" in name_lower or "roblox" in name_lower:
             product_type = "gift_card"
-            id_1 = "roblox_global"  # Використовуємо реальну категорію з твого аккаунта
-            
-            # Автоматично витягуємо кількість робуксів з назви (наприклад, "800 Robux" -> card_id = "800_robux")
+            id_1 = "roblox_global"
             numbers = re.findall(r'\d+', product_name)
             if numbers:
                 id_2 = f"{numbers[0]}_robux"
             else:
-                id_2 = "50_robux"  # Дефолтний номінал на випадок відсутності числа
-                
+                id_2 = "50_robux"
+            max_allowed_usd = 10.00
+            
         elif "stars" in name_lower or "telegram" in name_lower:
             product_type = "telegram_stars"
             numbers = re.findall(r'\d+', product_name)
             if numbers:
                 quantity = int(numbers[0])
+            
+            # РЕЖИМ ДИНАМІЧНОГО КАТАЛОГУ: отримуємо актуальні ціни з API RSC
+            catalog = get_rsc_telegram_stars_catalog()
+            api_matched_price = None
+            
+            if catalog and isinstance(catalog, list):
+                for item in catalog:
+                    # Шукаємо відповідність кількості зірок у каталозі API
+                    if item.get("stars") == quantity or item.get("quantity") == quantity:
+                        api_matched_price = float(item.get("price_usd", item.get("price", 0)))
+                        break
+
+            if api_matched_price:
+                # Якщо знайшли точну ціну в каталозі API, ліміт = ціна з API + 20% запас на коливання
+                max_allowed_usd = api_matched_price * 1.20
+            else:
+                # Запасний варіант формули, якщо каталог недоступний або номінал новий
+                base_price_per_star = 0.0155
+                max_allowed_usd = (quantity * base_price_per_star) * 1.25
+                if max_allowed_usd < 1.50:
+                    max_allowed_usd = 1.50
+
+        if amount > max_allowed_usd:
+            print(f"Rejected: Amount {amount} USD exceeds limit {max_allowed_usd} USD for product {product_name}", flush=True)
+            send_telegram(f"⚠️ <b>Order rejected due to price limit!</b>\nInvoice: <code>{invoice_id}</code>\nProduct: {product_name}\nAmount: {amount} USD (Max allowed: {max_allowed_usd} USD)")
+            return jsonify({"status": "rejected", "reason": "Amount exceeds limit"}), 200
 
         if not telegram_username:
             telegram_username = "durov"
@@ -190,7 +216,7 @@ def digiseller_webhook():
                 f"❌ <b>Error:</b> {error}\n\n"
                 f"⚠️ <i>Fulfill the order manually!</i>"
             )
-            send_telegram(alert_msg)
+            send_telegram(alert_nsg if 'alert_nsg' in locals() else alert_msg)
             return "Error processing order via API. Manual fulfillment required.", 200
 
         success_msg = (
