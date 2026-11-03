@@ -31,11 +31,9 @@ def get_rsc_telegram_stars_catalog():
         "Accept": "application/json"
     }
     try:
-        # Запит до ендпоінту каталогу Telegram Stars в RSC
         response = requests.get(f"{RSC_BASE_URL}/telegram/stars", headers=headers, timeout=10)
         if response.status_code == 200:
             data = response.json()
-            # Повертає список або словник продуктів/пачок з API
             return data.get("data", data)
     except Exception as e:
         print(f"Failed to fetch RSC catalog: {e}", flush=True)
@@ -116,6 +114,21 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
 def home():
     return "Digiseller-RSC Dynamic Integration Service is running successfully!", 200
 
+@app.route('/catalog', methods=['GET'])
+def view_catalog():
+    """Виводить актуальний каталог Telegram Stars та їхні ціни напряму з API RSC у браузері."""
+    headers = {
+        "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
+        "Accept": "application/json"
+    }
+    try:
+        response = requests.get(f"{RSC_BASE_URL}/telegram/stars", headers=headers, timeout=10)
+        if response.status_code == 200:
+            return response.json(), 200
+        return jsonify({"error": "Failed to fetch catalog", "status_code": response.status_code}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/webhook', methods=['POST', 'GET'])
 @app.route('/webhook/', methods=['POST', 'GET'])
 def digiseller_webhook():
@@ -174,22 +187,18 @@ def digiseller_webhook():
             if numbers:
                 quantity = int(numbers[0])
             
-            # РЕЖИМ ДИНАМІЧНОГО КАТАЛОГУ: отримуємо актуальні ціни з API RSC
             catalog = get_rsc_telegram_stars_catalog()
             api_matched_price = None
             
             if catalog and isinstance(catalog, list):
                 for item in catalog:
-                    # Шукаємо відповідність кількості зірок у каталозі API
                     if item.get("stars") == quantity or item.get("quantity") == quantity:
                         api_matched_price = float(item.get("price_usd", item.get("price", 0)))
                         break
 
             if api_matched_price:
-                # Якщо знайшли точну ціну в каталозі API, ліміт = ціна з API + 20% запас на коливання
                 max_allowed_usd = api_matched_price * 1.20
             else:
-                # Запасний варіант формули, якщо каталог недоступний або номінал новий
                 base_price_per_star = 0.0155
                 max_allowed_usd = (quantity * base_price_per_star) * 1.25
                 if max_allowed_usd < 1.50:
@@ -216,7 +225,7 @@ def digiseller_webhook():
                 f"❌ <b>Error:</b> {error}\n\n"
                 f"⚠️ <i>Fulfill the order manually!</i>"
             )
-            send_telegram(alert_nsg if 'alert_nsg' in locals() else alert_msg)
+            send_telegram(alert_msg)
             return "Error processing order via API. Manual fulfillment required.", 200
 
         success_msg = (
