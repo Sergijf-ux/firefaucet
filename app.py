@@ -16,7 +16,7 @@ RSC_BASE_URL = "https://resell.codes/api/v1"
 TARGET_PRODUCT_ID = "6349263"
 
 def send_telegram(text):
-    """Send notifications to the administrator in Telegram."""
+    """Надсилає сповіщення адміністратору в Telegram."""
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
@@ -25,7 +25,7 @@ def send_telegram(text):
         print(f"Telegram error: {e}", flush=True)
 
 def get_rsc_telegram_stars_pricing():
-    """Запит до API RSC для отримання актуальної ціни за зірку."""
+    """Запит до API RSC для отримання актуальної ціни за 1 зірку."""
     headers = {
         "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
         "Accept": "application/json"
@@ -39,7 +39,7 @@ def get_rsc_telegram_stars_pricing():
     return None
 
 def get_rsc_gift_cards_catalog(category_id="roblox_global"):
-    """Запит до API RSC для отримання актуального каталогу карток у категорії (наприклад, Roblox)."""
+    """Запит до API RSC для отримання актуального каталогу карток (Roblox)."""
     headers = {
         "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
         "Accept": "application/json"
@@ -54,7 +54,7 @@ def get_rsc_gift_cards_catalog(category_id="roblox_global"):
     return None
 
 def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
-    """Create an order in ReSellCodes and poll for status."""
+    """Створення замовлення в ReSellCodes та опитування статусу."""
     headers = {
         "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
         "Content-Type": "application/json",
@@ -130,9 +130,29 @@ def home():
 
 @app.route('/catalog', methods=['GET'])
 def view_catalog():
-    """Виводить зведені актуальні дані каталогів Telegram Stars та Roblox Gift Cards у браузері."""
+    """Виводить каталог у браузер і надсилає повний звіт у Telegram."""
     stars_pricing = get_rsc_telegram_stars_pricing()
     roblox_cards = get_rsc_gift_cards_catalog("roblox_global")
+    
+    star_price = "N/A"
+    if stars_pricing and isinstance(stars_pricing, dict):
+        star_price = stars_pricing.get("price_per_star", "N/A")
+    
+    roblox_info = ""
+    if roblox_cards and isinstance(roblox_cards, dict) and "offers" in roblox_cards:
+        for offer in roblox_cards["offers"]:
+            roblox_info += f"• <b>{offer.get('name')}:</b> ${offer.get('price_usd')} (Stock: {offer.get('stock')})\n"
+    if not roblox_info:
+        roblox_info = "• Дані недоступні\n"
+            
+    tg_msg = (
+        f"📊 <b>ПОТОЧНИЙ КАТАЛОГ RSC</b>\n\n"
+        f"⭐ <b>Telegram Stars:</b>\n"
+        f"• Ціна за 1 зірку: <code>${star_price}</code>\n\n"
+        f"🎮 <b>Roblox Gift Cards:</b>\n{roblox_info}"
+    )
+    
+    send_telegram(tg_msg)
     
     return jsonify({
         "telegram_stars_pricing": stars_pricing,
@@ -142,7 +162,7 @@ def view_catalog():
 @app.route('/webhook', methods=['POST', 'GET'])
 @app.route('/webhook/', methods=['POST', 'GET'])
 def digiseller_webhook():
-    """Dynamic webhook handler for Digiseller."""
+    """Обробник вебхуків Digiseller з динамічними лімітами."""
     try:
         args_data = request.args.to_dict()
         form_data = request.form.to_dict()
@@ -189,7 +209,23 @@ def digiseller_webhook():
                 id_2 = f"{numbers[0]}_robux"
             else:
                 id_2 = "50_robux"
-            max_allowed_usd = 15.00  # Безпечний ліміт для Роблокса
+            
+            # Динамічна перевірка ціни Роблокса за каталогом + 20%
+            roblox_catalog = get_rsc_gift_cards_catalog("roblox_global")
+            card_price = None
+            if roblox_catalog and isinstance(roblox_catalog, dict) and "offers" in roblox_catalog:
+                for offer in roblox_catalog["offers"]:
+                    if offer.get("card_id") == id_2:
+                        try:
+                            card_price = float(offer.get("price_usd"))
+                        except (ValueError, TypeError):
+                            pass
+                        break
+            
+            if card_price:
+                max_allowed_usd = card_price * 1.20
+            else:
+                max_allowed_usd = 15.00
             
         elif "stars" in name_lower or "telegram" in name_lower:
             product_type = "telegram_stars"
@@ -197,7 +233,6 @@ def digiseller_webhook():
             if numbers:
                 quantity = int(numbers[0])
             
-            # Отримуємо свіжу ціну за зірку з API RSC
             pricing_data = get_rsc_telegram_stars_pricing()
             price_per_star = 0.0152250
             
