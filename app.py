@@ -33,19 +33,19 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
         "Accept": "application/json"
     }
     
-    # 1. Telegram Stars (миттєвий прямий ендпоінт)
+    # 1. Telegram Stars
     if product_type == "telegram_stars":
         order_url = f"{RSC_BASE_URL}/telegram/stars/buy"
         username = extra_data.get("telegram_username", "durov") if extra_data else "durov"
         payload = {"telegram_username": username, "quantity": quantity}
     
-    # 2. Ігрові ключі (Game Keys)
+    # 2. Game Keys
     elif product_type == "game_key":
         order_url = f"{RSC_BASE_URL}/game-keys/order"
         payload = {"game_id": id_1, "key_id": id_2, "quantity": quantity}
         codes_key = "keys"
         
-    # 3. Подарункові карти (Gift Cards — сюди йде Roblox)
+    # 3. Gift Cards (Roblox и др.)
     elif product_type == "gift_card":
         order_url = f"{RSC_BASE_URL}/gift-cards/order"
         payload = {"category_id": id_1, "card_id": id_2, "quantity": quantity}
@@ -63,7 +63,7 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
         err_msg = res_data.get("error", {}).get("message", response.text)
         return None, f"API error (HTTP {response.status_code}): {err_msg}"
 
-    # Для Telegram Stars покупка відбувається миттєво без polling
+    # Telegram Stars обрабатываются мгновенно
     if product_type == "telegram_stars":
         order_status = res_data.get("status")
         if order_status in ["processing", "completed"]:
@@ -135,7 +135,6 @@ def digiseller_webhook():
         except ValueError:
             quantity = 1
 
-        # Отримуємо додаткові дані від покупця (наприклад, нікнейм Telegram)
         telegram_username = (
             merged.get('options_1') or merged.get('account') or merged.get('username') or 
             merged.get('telegram_username') or merged.get('text1') or ''
@@ -160,8 +159,15 @@ def digiseller_webhook():
         name_lower = product_name.lower()
         if "robux" in name_lower or "roblox" in name_lower:
             product_type = "gift_card"
-            id_1 = "roblox_ru"      # Категорія з документації (або змінити під твою)
-            id_2 = "199_robux"      # ID картки/номіналу
+            id_1 = "roblox_global"  # Використовуємо реальну категорію з твого аккаунта
+            
+            # Автоматично витягуємо кількість робуксів з назви (наприклад, "800 Robux" -> card_id = "800_robux")
+            numbers = re.findall(r'\d+', product_name)
+            if numbers:
+                id_2 = f"{numbers[0]}_robux"
+            else:
+                id_2 = "50_robux"  # Дефолтний номінал на випадок відсутності числа
+                
         elif "stars" in name_lower or "telegram" in name_lower:
             product_type = "telegram_stars"
             numbers = re.findall(r'\d+', product_name)
@@ -169,7 +175,7 @@ def digiseller_webhook():
                 quantity = int(numbers[0])
 
         if not telegram_username:
-            telegram_username = "durov"  # Дефолтне значення для Telegram
+            telegram_username = "durov"
 
         send_telegram(f"📥 <b>New order received!</b>\nInvoice: <code>{invoice_id}</code>\nProduct: {product_name}\nType: {product_type}\nAmount: {amount} USD\nPurchasing...")
 
