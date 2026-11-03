@@ -25,7 +25,7 @@ def send_telegram(text):
     except Exception as e:
         print(f"Telegram error: {e}", flush=True)
 
-def execute_rsc_purchase(product_type, id_1, id_2, quantity=1):
+def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
     """Create an order in ReSellCodes and poll for status."""
     headers = {
         "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
@@ -33,10 +33,19 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1):
         "Accept": "application/json"
     }
     
-    if product_type == "game_key":
+    # 1. Telegram Stars (миттєвий прямий ендпоінт)
+    if product_type == "telegram_stars":
+        order_url = f"{RSC_BASE_URL}/telegram/stars/buy"
+        username = extra_data.get("telegram_username", "durov") if extra_data else "durov"
+        payload = {"telegram_username": username, "quantity": quantity}
+    
+    # 2. Ігрові ключі (Game Keys)
+    elif product_type == "game_key":
         order_url = f"{RSC_BASE_URL}/game-keys/order"
         payload = {"game_id": id_1, "key_id": id_2, "quantity": quantity}
         codes_key = "keys"
+        
+    # 3. Подарункові карти (Gift Cards — сюди йде Roblox)
     elif product_type == "gift_card":
         order_url = f"{RSC_BASE_URL}/gift-cards/order"
         payload = {"category_id": id_1, "card_id": id_2, "quantity": quantity}
@@ -53,6 +62,17 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1):
     if response.status_code != 200:
         err_msg = res_data.get("error", {}).get("message", response.text)
         return None, f"API error (HTTP {response.status_code}): {err_msg}"
+
+    # Для Telegram Stars покупка відбувається миттєво без polling
+    if product_type == "telegram_stars":
+        order_status = res_data.get("status")
+        if order_status in ["processing", "completed"]:
+            charged = res_data.get("charged_usd", "0")
+            uname = res_data.get("telegram_username")
+            st_count = res_data.get("stars")
+            return f"Telegram Stars successfully sent!\nUsername: @{uname}\nStars: {st_count}\nCharged: ${charged}", None
+        else:
+            return None, f"Telegram order status: {order_status}, Reason: {res_data.get('status_reason')}"
 
     order_number = res_data.get("number")
     if not order_number:
@@ -75,7 +95,7 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1):
             items = poll_data.get(codes_key, [])
             if items:
                 return "\n".join(items), None
-            return None, "Order completed, but the keys list is empty"
+            return None, "Order completed, but the items list is empty"
             
         if status in ["failed", "refund"]:
             fail_reason = poll_data.get("fail_code", "unknown_fail")
@@ -115,6 +135,12 @@ def digiseller_webhook():
         except ValueError:
             quantity = 1
 
+        # Отримуємо додаткові дані від покупця (наприклад, нікнейм Telegram)
+        telegram_username = (
+            merged.get('options_1') or merged.get('account') or merged.get('username') or 
+            merged.get('telegram_username') or merged.get('text1') or ''
+        ).strip().lstrip('@')
+
         # 1. Validate Product ID
         if product_id and product_id != TARGET_PRODUCT_ID:
             print(f"Ignored: Product ID {product_id} does not match target {TARGET_PRODUCT_ID}", flush=True)
@@ -126,24 +152,29 @@ def digiseller_webhook():
             send_telegram(f"⚠️ <b>Order rejected due to price limit!</b>\nInvoice: <code>{invoice_id}</code>\nAmount: {amount} USD (Max: {MAX_AMOUNT_USD} USD)")
             return jsonify({"status": "rejected", "reason": "Amount exceeds limit"}), 200
 
-        # Dynamic parameter determination based on product name
-        product_type = "gift_card"
-        id_1 = "telegram_stars"
-        id_2 = "50_stars"
+        # Динамічне визначення продукту (Telegram Stars або Roblox)
+        product_type = "telegram_stars"
+        id_1 = None
+        id_2 = None
 
         name_lower = product_name.lower()
         if "robux" in name_lower or "roblox" in name_lower:
-            id_1 = "robux_ru"
-            id_2 = "199_robux"
+            product_type = "gift_card"
+            id_1 = "roblox_ru"      # Категорія з документації (або змінити під твою)
+            id_2 = "199_robux"      # ID картки/номіналу
         elif "stars" in name_lower or "telegram" in name_lower:
-            id_1 = "telegram_stars"
+            product_type = "telegram_stars"
             numbers = re.findall(r'\d+', product_name)
             if numbers:
-                id_2 = f"{numbers[0]}_stars"
+                quantity = int(numbers[0])
 
-        send_telegram(f"📥 <b>New order received!</b>\nInvoice: <code>{invoice_id}</code>\nProduct: {product_name}\nAmount: {amount} USD\nRSC Params: {id_1} / {id_2}\nPurchasing...")
+        if not telegram_username:
+            telegram_username = "durov"  # Дефолтне значення для Telegram
 
-        issued_keys, error = execute_rsc_purchase(product_type, id_1, id_2, quantity)
+        send_telegram(f"📥 <b>New order received!</b>\nInvoice: <code>{invoice_id}</code>\nProduct: {product_name}\nType: {product_type}\nAmount: {amount} USD\nPurchasing...")
+
+        extra_data = {"telegram_username": telegram_username}
+        issued_keys, error = execute_rsc_purchase(product_type, id_1, id_2, quantity, extra_data=extra_data)
 
         if error:
             alert_msg = (
@@ -159,7 +190,7 @@ def digiseller_webhook():
         success_msg = (
             f"🛒 <b>SUCCESSFUL AUTO-ORDER!</b>\n\n"
             f"🆔 <b>Digiseller Invoice:</b> <code>{invoice_id}</code>\n"
-            f"🔑 <b>Issued Codes:</b>\n<code>{issued_keys}</code>"
+            f"🔑 <b>Result / Codes:</b>\n<code>{issued_keys}</code>"
         )
         send_telegram(success_msg)
         
