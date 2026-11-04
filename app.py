@@ -207,15 +207,15 @@ def digiseller_webhook():
         product_name = merged.get('name') or merged.get('goods_name') or ''
         
         try:
-            amount = float(merged.get('Amount') or merged.get('amount') or 0)
+            amount = float(merged.get('Amount') or merged.get('amount') or merged.get('sum') or merged.get('OutSum') or 0)
         except ValueError:
             amount = 0.0
 
-        raw_qty = merged.get('cnt') or merged.get('quantity') or 1
+        raw_qty = merged.get('cnt') or merged.get('quantity') or merged.get('amount_goods') or 50
         try:
             quantity = int(raw_qty)
         except ValueError:
-            quantity = 1
+            quantity = 50
 
         telegram_username = (
             merged.get('options_1') or merged.get('account') or merged.get('username') or 
@@ -230,7 +230,7 @@ def digiseller_webhook():
         id_1 = None
         id_2 = None
         extra_data = {}
-        max_allowed_usd = 1.50
+        max_allowed_usd = 50.00
 
         name_lower = product_name.lower()
         
@@ -244,7 +244,6 @@ def digiseller_webhook():
             
             extra_data["months"] = months
             
-            # Динамічна перевірка ціни Telegram Premium за каталогом + 20%
             prem_pricing = get_rsc_telegram_premium_pricing()
             plan_price = None
             if prem_pricing and isinstance(prem_pricing, dict) and "plans" in prem_pricing:
@@ -313,9 +312,6 @@ def digiseller_webhook():
             
         elif "stars" in name_lower or "telegram" in name_lower:
             product_type = "telegram_stars"
-            numbers = re.findall(r'\d+', product_name)
-            if numbers:
-                quantity = int(numbers[0])
             
             pricing_data = get_rsc_telegram_stars_pricing()
             price_per_star = 0.0152250
@@ -331,7 +327,7 @@ def digiseller_webhook():
             if max_allowed_usd < 1.00:
                 max_allowed_usd = 1.00
 
-        if amount > max_allowed_usd:
+        if amount > 0 and amount > max_allowed_usd:
             print(f"Rejected: Amount {amount} USD exceeds limit {max_allowed_usd} USD for product {product_name}", flush=True)
             send_telegram(f"⚠️ <b>Order rejected due to price limit!</b>\nInvoice: <code>{invoice_id}</code>\nProduct: {product_name}\nAmount: {amount} USD (Max allowed: {max_allowed_usd} USD)")
             return jsonify({"status": "rejected", "reason": "Amount exceeds limit"}), 200
@@ -339,7 +335,7 @@ def digiseller_webhook():
         if not telegram_username:
             telegram_username = "durov"
 
-        send_telegram(f"📥 <b>New order received!</b>\nInvoice: <code>{invoice_id}</code>\nProduct: {product_name}\nType: {product_type}\nAmount: {amount} USD\nPurchasing...")
+        send_telegram(f"📥 <b>New order received!</b>\nInvoice: <code>{invoice_id}</code>\nProduct: {product_name}\nType: {product_type}\nAmount: {amount} USD\nQty: {quantity}\nPurchasing...")
 
         extra_data["telegram_username"] = telegram_username
         issued_keys, error = execute_rsc_purchase(product_type, id_1, id_2, quantity, extra_data=extra_data)
@@ -372,7 +368,6 @@ def digiseller_webhook():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
-
 
 
 
