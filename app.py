@@ -168,16 +168,30 @@ def telegram_webhook():
         if chat_id == TELEGRAM_CHAT_ID and (text in ["/price", "/prices", "/прайс", "прайс", "ціни"]):
             stars_data = get_rsc_telegram_stars_pricing()
             prem_data = get_rsc_telegram_premium_pricing()
+            pubg_data = get_rsc_gift_cards_catalog("pubg_mobile")
+            roblox_data = get_rsc_gift_cards_catalog("roblox_global")
             
-            price_msg = "📊 <b>Актуальні ціни ReSellCodes (RSC):</b>\n\n"
+            price_msg = "📊 <b>Повний актуальний прайс ReSellCodes (RSC):</b>\n\n"
             
             if stars_data:
-                price_msg += f"⭐ <b>Telegram Stars:</b>\n• Ціна за 1 зірку: <code>${stars_data.get('price_per_star', 'N/A')}</code>\n\n"
+                price_msg += f"⭐ <b>Telegram Stars:</b>\n• За 1 зірку: <code>${stars_data.get('price_per_star', 'N/A')}</code>\n\n"
             
             if prem_data and "plans" in prem_data:
                 price_msg += "💎 <b>Telegram Premium:</b>\n"
                 for plan in prem_data["plans"]:
                     price_msg += f"• {plan.get('months')} міс: <code>${plan.get('price_usd')}</code>\n"
+                price_msg += "\n"
+
+            if pubg_data and isinstance(pubg_data, dict) and "offers" in pubg_data:
+                price_msg += "🎯 <b>PUBG Mobile UC:</b>\n"
+                for offer in pubg_data["offers"][:6]: # Виводимо перші варіанти для прикладу
+                    price_msg += f"• {offer.get('name', offer.get('card_id'))}: <code>${offer.get('price_usd')}</code>\n"
+                price_msg += "\n"
+
+            if roblox_data and isinstance(roblox_data, dict) and "offers" in roblox_data:
+                price_msg += "🧱 <b>Roblox Robux:</b>\n"
+                for offer in roblox_data["offers"][:6]:
+                    price_msg += f"• {offer.get('name', offer.get('card_id'))}: <code>${offer.get('price_usd')}</code>\n"
             
             send_telegram(price_msg)
 
@@ -353,7 +367,6 @@ if __name__ == '__main__':
     setup_telegram_webhook()
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
-
 
 
 
