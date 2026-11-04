@@ -73,11 +73,15 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
     
     if product_type == "telegram_stars":
         order_url = f"{RSC_BASE_URL}/telegram/stars/buy"
-        username = extra_data.get("telegram_username", "durov") if extra_data else "durov"
+        username = extra_data.get("telegram_username", "") if extra_data else ""
+        if not username:
+            return None, "Missing telegram_username"
         payload = {"telegram_username": username, "quantity": quantity}
     elif product_type == "telegram_premium":
         order_url = f"{RSC_BASE_URL}/telegram/premium/buy"
-        username = extra_data.get("telegram_username", "durov") if extra_data else "durov"
+        username = extra_data.get("telegram_username", "") if extra_data else ""
+        if not username:
+            return None, "Missing telegram_username"
         months = extra_data.get("months", 3) if extra_data else 3
         payload = {"telegram_username": username, "months": months}
     elif product_type == "game_key":
@@ -142,49 +146,6 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
 def home():
     return "Digiseller-RSC Dynamic Integration Service is running successfully!", 200
 
-@app.route('/catalog', methods=['GET'])
-def view_catalog():
-    stars_pricing = get_rsc_telegram_stars_pricing()
-    premium_pricing = get_rsc_telegram_premium_pricing()
-    roblox_cards = get_rsc_gift_cards_catalog("roblox_global")
-    pubg_cards = get_rsc_gift_cards_catalog("pubg_mobile")
-    
-    star_price = "N/A"
-    if stars_pricing and isinstance(stars_pricing, dict):
-        star_price = stars_pricing.get("price_per_star", "N/A")
-
-    premium_info = ""
-    if premium_pricing and isinstance(premium_pricing, dict) and "plans" in premium_pricing:
-        for plan in premium_pricing["plans"]:
-            premium_info += f"• <b>{plan.get('months')} міс.:</b> ${plan.get('price_usd')}\n"
-    
-    roblox_info = ""
-    if roblox_cards and isinstance(roblox_cards, dict) and "offers" in roblox_cards:
-        for offer in roblox_cards["offers"]:
-            roblox_info += f"• <b>{offer.get('name')}:</b> ${offer.get('price_usd')} (Stock: {offer.get('stock')})\n"
-            
-    pubg_info = ""
-    if pubg_cards and isinstance(pubg_cards, dict) and "offers" in pubg_cards:
-        for offer in pubg_cards["offers"]:
-            pubg_info += f"• <b>{offer.get('name')}:</b> ${offer.get('price_usd')} (Stock: {offer.get('stock')})\n"
-
-    tg_msg = (
-        f"📊 <b>ПОТОЧНИЙ КАТАЛОГ RSC</b>\n\n"
-        f"⭐ <b>Telegram Stars:</b>\n• Ціна за 1 зірку: <code>${star_price}</code>\n\n"
-        f"💎 <b>Telegram Premium:</b>\n{premium_info or '• Немає даних\n'}\n"
-        f"🎮 <b>Roblox Gift Cards:</b>\n{roblox_info or '• Немає даних\n'}\n"
-        f"🎯 <b>PUBG Mobile:</b>\n{pubg_info or '• Немає даних\n'}"
-    )
-    
-    send_telegram(tg_msg)
-    
-    return jsonify({
-        "telegram_stars_pricing": stars_pricing,
-        "telegram_premium_pricing": premium_pricing,
-        "roblox_gift_cards": roblox_cards,
-        "pubg_mobile": pubg_cards
-    }), 200
-
 @app.route('/webhook', methods=['POST', 'GET'])
 @app.route('/webhook/', methods=['POST', 'GET'])
 def digiseller_webhook():
@@ -195,6 +156,9 @@ def digiseller_webhook():
         values_data = request.values.to_dict()
         
         merged = {**args_data, **form_data, **json_data, **values_data}
+        
+        # ДЕБАГ: друкуємо все, що прийшло від Дігіселера, щоб бачити структуру в логах Render
+        print(f"FULL WEBHOOK DATA RECEIVED: {merged}", flush=True)
 
         product_id = str(merged.get('ID_G') or merged.get('id_g') or merged.get('ID_I') or merged.get('id_i') or merged.get('inv_id') or merged.get('order_id') or '')
         invoice_id = merged.get('ID_I') or merged.get('id_i') or merged.get('inv_id') or merged.get('order_id') or 'UNKNOWN'
@@ -211,11 +175,26 @@ def digiseller_webhook():
         except ValueError:
             quantity = 50
 
-        telegram_username = (
-            merged.get('options_1') or merged.get('option1') or merged.get('text1') or 
-            merged.get('param1') or merged.get('account') or merged.get('username') or 
-            merged.get('telegram_username') or ''
-        ).strip().lstrip('@')
+        # Універсальний пошук юзернейма по всіх можливих ключах Дігіселера (включно з кастомними опціями)
+        telegram_username = ""
+        for key, val in merged.items():
+            if val and isinstance(val, str):
+                cleaned_val = val.strip()
+                # Шукаємо схоже на юзернейм або те, що ввів користувач у кастомне поле
+                if "username" in key.lower() or "option" in key.lower() or "param" in key.lower() or "text" in key.lower() or "account" in key.lower():
+                    if cleaned_val and cleaned_val.lower() not in ["unknown", "none", "null"]:
+                        telegram_username = cleaned_val
+                        break
+        
+        # Якщо в циклах не знайшлося, перевіряємо стандартні поля на пряму
+        if not telegram_username:
+            for standard_key in ['options_1', 'option1', 'text1', 'param1', 'account', 'username', 'telegram_username', 'comment']:
+                val = merged.get(standard_key)
+                if val and str(val).strip():
+                    telegram_username = str(val).strip()
+                    break
+
+        telegram_username = telegram_username.lstrip('@')
 
         if product_id and product_id != TARGET_PRODUCT_ID:
             print(f"Ignored: Product ID {product_id} does not match target {TARGET_PRODUCT_ID}", flush=True)
@@ -324,6 +303,11 @@ def digiseller_webhook():
             print(f"Rejected: Amount {amount} USD exceeds limit {max_allowed_usd} USD", flush=True)
             send_telegram(f"⚠️ <b>Order rejected due to price limit!</b>\nInvoice: <code>{invoice_id}</code>\nAmount: {amount} USD")
             return jsonify({"status": "rejected", "reason": "Amount exceeds limit"}), 200
+
+        if not telegram_username and product_type in ["telegram_stars", "telegram_premium"]:
+            err_msg = f"Telegram username not provided by buyer for invoice {invoice_id}."
+            send_telegram(f"🚨 <b>AUTOMATED PURCHASE ERROR!</b>\n\n🆔 <b>Invoice:</b> <code>{invoice_id}</code>\n❌ <b>Error:</b> {err_msg}\n\n⚠️ <i>Fulfill the order manually!</i>")
+            return "Error: Missing Telegram username.", 200
 
         send_telegram(f"📥 <b>New order received!</b>\nInvoice: <code>{invoice_id}</code>\nProduct: {product_name}\nTarget: @{telegram_username}\nQty: {quantity}\nPurchasing...")
 
