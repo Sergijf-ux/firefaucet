@@ -25,7 +25,6 @@ def send_telegram(text):
         print(f"Telegram error: {e}", flush=True)
 
 def get_rsc_telegram_stars_pricing():
-    """Запит до API RSC для отримання актуальної ціни за 1 зірку."""
     headers = {
         "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
         "Accept": "application/json"
@@ -39,7 +38,6 @@ def get_rsc_telegram_stars_pricing():
     return None
 
 def get_rsc_telegram_premium_pricing():
-    """Запит до API RSC для отримання тарифів Telegram Premium."""
     headers = {
         "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
         "Accept": "application/json"
@@ -53,7 +51,6 @@ def get_rsc_telegram_premium_pricing():
     return None
 
 def get_rsc_gift_cards_catalog(category_id):
-    """Запит до API RSC для отримання актуального каталогу карток."""
     headers = {
         "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
         "Accept": "application/json"
@@ -68,7 +65,6 @@ def get_rsc_gift_cards_catalog(category_id):
     return None
 
 def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
-    """Створення замовлення в ReSellCodes та опитування статусу."""
     headers = {
         "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
         "Content-Type": "application/json",
@@ -152,7 +148,6 @@ def home():
 
 @app.route('/catalog', methods=['GET'])
 def view_catalog():
-    """Виводить зведені каталоги у браузер і надсилає звіт у Telegram."""
     stars_pricing = get_rsc_telegram_stars_pricing()
     premium_pricing = get_rsc_telegram_premium_pricing()
     roblox_cards = get_rsc_gift_cards_catalog("roblox_global")
@@ -197,7 +192,6 @@ def view_catalog():
 @app.route('/webhook', methods=['POST', 'GET'])
 @app.route('/webhook/', methods=['POST', 'GET'])
 def digiseller_webhook():
-    """Обробник вебхуків Digiseller з підтримкою всіх категорій."""
     try:
         args_data = request.args.to_dict()
         form_data = request.form.to_dict()
@@ -221,6 +215,7 @@ def digiseller_webhook():
         except ValueError:
             quantity = 50
 
+        # Збираємо юзернейм покупця з можливих полів
         telegram_username = (
             merged.get('options_1') or merged.get('option1') or merged.get('text1') or 
             merged.get('param1') or merged.get('account') or merged.get('username') or 
@@ -335,6 +330,7 @@ def digiseller_webhook():
             send_telegram(f"⚠️ <b>Order rejected due to price limit!</b>\nInvoice: <code>{invoice_id}</code>\nAmount: {amount} USD")
             return jsonify({"status": "rejected", "reason": "Amount exceeds limit"}), 200
 
+        # Суворе правило: якщо юзернейма немає, ніяких "дуров", лише сповіщення про помилку для ручної видачі
         if not telegram_username and product_type in ["telegram_stars", "telegram_premium"]:
             err_msg = f"Telegram username not provided by buyer for invoice {invoice_id}."
             send_telegram(f"🚨 <b>AUTOMATED PURCHASE ERROR!</b>\n\n🆔 <b>Invoice:</b> <code>{invoice_id}</code>\n❌ <b>Error:</b> {err_msg}\n\n⚠️ <i>Fulfill the order manually!</i>")
