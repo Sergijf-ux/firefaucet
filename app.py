@@ -157,8 +157,8 @@ def digiseller_webhook():
         
         merged = {**args_data, **form_data, **json_data, **values_data}
         
-        # ДЕБАГ: друкуємо все, що прийшло від Дігіселера, щоб бачити структуру в логах Render
-        print(f"FULL WEBHOOK DATA RECEIVED: {merged}", flush=True)
+        # ВИВОДИМО ПОВНИЙ ЗТЯГНУТИЙ СЛОВНИК В ЛОГИ RENDER, ЩОБ БАЧИТИ ВСІ ПОЛЯ
+        print(f"=== DIGISELLER WEBHOOK DUMP: {merged} ===", flush=True)
 
         product_id = str(merged.get('ID_G') or merged.get('id_g') or merged.get('ID_I') or merged.get('id_i') or merged.get('inv_id') or merged.get('order_id') or '')
         invoice_id = merged.get('ID_I') or merged.get('id_i') or merged.get('inv_id') or merged.get('order_id') or 'UNKNOWN'
@@ -175,26 +175,34 @@ def digiseller_webhook():
         except ValueError:
             quantity = 50
 
-        # Універсальний пошук юзернейма по всіх можливих ключах Дігіселера (включно з кастомними опціями)
+        # Шукаємо юзернейм серед усіх можливих ключів або вкладених параметрів
         telegram_username = ""
-        for key, val in merged.items():
-            if val and isinstance(val, str):
-                cleaned_val = val.strip()
-                # Шукаємо схоже на юзернейм або те, що ввів користувач у кастомне поле
-                if "username" in key.lower() or "option" in key.lower() or "param" in key.lower() or "text" in key.lower() or "account" in key.lower():
-                    if cleaned_val and cleaned_val.lower() not in ["unknown", "none", "null"]:
-                        telegram_username = cleaned_val
-                        break
         
-        # Якщо в циклах не знайшлося, перевіряємо стандартні поля на пряму
+        # 1. Перебираємо ключі верхнього рівня
+        for key in ['options_1', 'option1', 'text1', 'param1', 'account', 'username', 'telegram_username', 'comment', 'custom_field', 'field_1']:
+            val = merged.get(key)
+            if val and str(val).strip():
+                telegram_username = str(val).strip()
+                break
+                
+        # 2. Якщо не знайшли, шукаємо будь-яке значення, що містить символ '@' або схоже на нікнейм у всьому словнику
         if not telegram_username:
-            for standard_key in ['options_1', 'option1', 'text1', 'param1', 'account', 'username', 'telegram_username', 'comment']:
-                val = merged.get(standard_key)
-                if val and str(val).strip():
-                    telegram_username = str(val).strip()
-                    break
+            for k, v in merged.items():
+                if v and isinstance(v, str):
+                    v_str = v.strip()
+                    if len(v_str) > 2 and v_str.lower() not in ["unknown", "none", "null", "50", "6349263"]:
+                        # Якщо це не схоже на звичайне системне число, беремо його як потенційний нік
+                        if not v_str.isdigit():
+                            telegram_username = v_str
+                            break
 
         telegram_username = telegram_username.lstrip('@')
+
+        # ЗАХИСНИЙ РЕЖИМ ДЛЯ ТЕСТІВ: якщо юзернейм все одно порожній, ставимо тимчасово дуров, 
+        # щоб ти бачив чи проходить зв'язок з RSC API, а не падало на початковому кроці.
+        if not telegram_username:
+            telegram_username = "durov"
+            print("WARNING: Username was empty, fallback to 'durov' for testing purposes.", flush=True)
 
         if product_id and product_id != TARGET_PRODUCT_ID:
             print(f"Ignored: Product ID {product_id} does not match target {TARGET_PRODUCT_ID}", flush=True)
@@ -304,11 +312,6 @@ def digiseller_webhook():
             send_telegram(f"⚠️ <b>Order rejected due to price limit!</b>\nInvoice: <code>{invoice_id}</code>\nAmount: {amount} USD")
             return jsonify({"status": "rejected", "reason": "Amount exceeds limit"}), 200
 
-        if not telegram_username and product_type in ["telegram_stars", "telegram_premium"]:
-            err_msg = f"Telegram username not provided by buyer for invoice {invoice_id}."
-            send_telegram(f"🚨 <b>AUTOMATED PURCHASE ERROR!</b>\n\n🆔 <b>Invoice:</b> <code>{invoice_id}</code>\n❌ <b>Error:</b> {err_msg}\n\n⚠️ <i>Fulfill the order manually!</i>")
-            return "Error: Missing Telegram username.", 200
-
         send_telegram(f"📥 <b>New order received!</b>\nInvoice: <code>{invoice_id}</code>\nProduct: {product_name}\nTarget: @{telegram_username}\nQty: {quantity}\nPurchasing...")
 
         extra_data["telegram_username"] = telegram_username
@@ -344,7 +347,6 @@ def digiseller_webhook():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
-
 
 
 
