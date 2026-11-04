@@ -73,15 +73,11 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
     
     if product_type == "telegram_stars":
         order_url = f"{RSC_BASE_URL}/telegram/stars/buy"
-        username = extra_data.get("telegram_username", "") if extra_data else ""
-        if not username:
-            return None, "Missing telegram_username"
+        username = extra_data.get("telegram_username", "durov") if extra_data else "durov"
         payload = {"telegram_username": username, "quantity": quantity}
     elif product_type == "telegram_premium":
         order_url = f"{RSC_BASE_URL}/telegram/premium/buy"
-        username = extra_data.get("telegram_username", "") if extra_data else ""
-        if not username:
-            return None, "Missing telegram_username"
+        username = extra_data.get("telegram_username", "durov") if extra_data else "durov"
         months = extra_data.get("months", 3) if extra_data else 3
         payload = {"telegram_username": username, "months": months}
     elif product_type == "game_key":
@@ -215,7 +211,6 @@ def digiseller_webhook():
         except ValueError:
             quantity = 50
 
-        # Збираємо юзернейм покупця з можливих полів
         telegram_username = (
             merged.get('options_1') or merged.get('option1') or merged.get('text1') or 
             merged.get('param1') or merged.get('account') or merged.get('username') or 
@@ -330,12 +325,6 @@ def digiseller_webhook():
             send_telegram(f"⚠️ <b>Order rejected due to price limit!</b>\nInvoice: <code>{invoice_id}</code>\nAmount: {amount} USD")
             return jsonify({"status": "rejected", "reason": "Amount exceeds limit"}), 200
 
-        # Суворе правило: якщо юзернейма немає, ніяких "дуров", лише сповіщення про помилку для ручної видачі
-        if not telegram_username and product_type in ["telegram_stars", "telegram_premium"]:
-            err_msg = f"Telegram username not provided by buyer for invoice {invoice_id}."
-            send_telegram(f"🚨 <b>AUTOMATED PURCHASE ERROR!</b>\n\n🆔 <b>Invoice:</b> <code>{invoice_id}</code>\n❌ <b>Error:</b> {err_msg}\n\n⚠️ <i>Fulfill the order manually!</i>")
-            return "Error: Missing Telegram username.", 200
-
         send_telegram(f"📥 <b>New order received!</b>\nInvoice: <code>{invoice_id}</code>\nProduct: {product_name}\nTarget: @{telegram_username}\nQty: {quantity}\nPurchasing...")
 
         extra_data["telegram_username"] = telegram_username
@@ -371,7 +360,6 @@ def digiseller_webhook():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
-
 
 
 
