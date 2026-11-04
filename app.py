@@ -77,11 +77,15 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
     
     if product_type == "telegram_stars":
         order_url = f"{RSC_BASE_URL}/telegram/stars/buy"
-        username = extra_data.get("telegram_username", "durov") if extra_data else "durov"
+        username = extra_data.get("telegram_username", "") if extra_data else ""
+        if not username:
+            return None, "Missing telegram_username"
         payload = {"telegram_username": username, "quantity": quantity}
     elif product_type == "telegram_premium":
         order_url = f"{RSC_BASE_URL}/telegram/premium/buy"
-        username = extra_data.get("telegram_username", "durov") if extra_data else "durov"
+        username = extra_data.get("telegram_username", "") if extra_data else ""
+        if not username:
+            return None, "Missing telegram_username"
         months = extra_data.get("months", 3) if extra_data else 3
         payload = {"telegram_username": username, "months": months}
     elif product_type == "game_key":
@@ -193,7 +197,7 @@ def view_catalog():
 @app.route('/webhook', methods=['POST', 'GET'])
 @app.route('/webhook/', methods=['POST', 'GET'])
 def digiseller_webhook():
-    """Обробник вебхуків Digiseller з підтримкою Telegram Stars, Telegram Premium, Roblox та PUBG Mobile."""
+    """Обробник вебхуків Digiseller з підтримкою всіх категорій."""
     try:
         args_data = request.args.to_dict()
         form_data = request.form.to_dict()
@@ -218,8 +222,9 @@ def digiseller_webhook():
             quantity = 50
 
         telegram_username = (
-            merged.get('options_1') or merged.get('account') or merged.get('username') or 
-            merged.get('telegram_username') or merged.get('text1') or ''
+            merged.get('options_1') or merged.get('option1') or merged.get('text1') or 
+            merged.get('param1') or merged.get('account') or merged.get('username') or 
+            merged.get('telegram_username') or ''
         ).strip().lstrip('@')
 
         if product_id and product_id != TARGET_PRODUCT_ID:
@@ -312,10 +317,8 @@ def digiseller_webhook():
             
         elif "stars" in name_lower or "telegram" in name_lower:
             product_type = "telegram_stars"
-            
             pricing_data = get_rsc_telegram_stars_pricing()
             price_per_star = 0.0152250
-            
             if pricing_data and isinstance(pricing_data, dict) and "price_per_star" in pricing_data:
                 try:
                     price_per_star = float(pricing_data["price_per_star"])
@@ -328,14 +331,16 @@ def digiseller_webhook():
                 max_allowed_usd = 1.00
 
         if amount > 0 and amount > max_allowed_usd:
-            print(f"Rejected: Amount {amount} USD exceeds limit {max_allowed_usd} USD for product {product_name}", flush=True)
-            send_telegram(f"⚠️ <b>Order rejected due to price limit!</b>\nInvoice: <code>{invoice_id}</code>\nProduct: {product_name}\nAmount: {amount} USD (Max allowed: {max_allowed_usd} USD)")
+            print(f"Rejected: Amount {amount} USD exceeds limit {max_allowed_usd} USD", flush=True)
+            send_telegram(f"⚠️ <b>Order rejected due to price limit!</b>\nInvoice: <code>{invoice_id}</code>\nAmount: {amount} USD")
             return jsonify({"status": "rejected", "reason": "Amount exceeds limit"}), 200
 
-        if not telegram_username:
-            telegram_username = "durov"
+        if not telegram_username and product_type in ["telegram_stars", "telegram_premium"]:
+            err_msg = f"Telegram username not provided by buyer for invoice {invoice_id}."
+            send_telegram(f"🚨 <b>AUTOMATED PURCHASE ERROR!</b>\n\n🆔 <b>Invoice:</b> <code>{invoice_id}</code>\n❌ <b>Error:</b> {err_msg}\n\n⚠️ <i>Fulfill the order manually!</i>")
+            return "Error: Missing Telegram username.", 200
 
-        send_telegram(f"📥 <b>New order received!</b>\nInvoice: <code>{invoice_id}</code>\nProduct: {product_name}\nType: {product_type}\nAmount: {amount} USD\nQty: {quantity}\nPurchasing...")
+        send_telegram(f"📥 <b>New order received!</b>\nInvoice: <code>{invoice_id}</code>\nProduct: {product_name}\nTarget: @{telegram_username}\nQty: {quantity}\nPurchasing...")
 
         extra_data["telegram_username"] = telegram_username
         issued_keys, error = execute_rsc_purchase(product_type, id_1, id_2, quantity, extra_data=extra_data)
@@ -345,6 +350,7 @@ def digiseller_webhook():
                 f"🚨 <b>AUTOMATED PURCHASE ERROR!</b>\n\n"
                 f"🆔 <b>Invoice:</b> <code>{invoice_id}</code>\n"
                 f"📦 <b>Product:</b> {product_name}\n"
+                f"👤 <b>Username:</b> @{telegram_username}\n"
                 f"❌ <b>Error:</b> {error}\n\n"
                 f"⚠️ <i>Fulfill the order manually!</i>"
             )
@@ -354,7 +360,8 @@ def digiseller_webhook():
         success_msg = (
             f"🛒 <b>SUCCESSFUL AUTO-ORDER!</b>\n\n"
             f"🆔 <b>Digiseller Invoice:</b> <code>{invoice_id}</code>\n"
-            f"🔑 <b>Result / Codes:</b>\n<code>{issued_keys}</code>"
+            f"👤 <b>Target:</b> @{telegram_username}\n"
+            f"🔑 <b>Result:</b>\n<code>{issued_keys}</code>"
         )
         send_telegram(success_msg)
         
