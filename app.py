@@ -14,6 +14,7 @@ RESELL_CODES_API_KEY = "rsc_live_b61d7b4894461371f7ed9b636752c35ac703a6d5c4625cd
 RSC_BASE_URL = "https://resell.codes/api/v1"
 
 TARGET_PRODUCT_ID = "6349263"
+RENDER_APP_URL = "https://digiseller-bot-2z5g.onrender.com"
 
 def send_telegram(text):
     """Надсилає сповіщення адміністратору в Telegram."""
@@ -23,6 +24,15 @@ def send_telegram(text):
         requests.post(url, json=payload, timeout=10)
     except Exception as e:
         print(f"Telegram error: {e}", flush=True)
+
+def setup_telegram_webhook():
+    """Автоматично реєструє вебхук для команд бота в Telegram."""
+    try:
+        webhook_url = f"{RENDER_APP_URL}/telegram-webhook"
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setWebhook?url={webhook_url}"
+        requests.get(url, timeout=10)
+    except Exception as e:
+        print(f"Auto-setup webhook error: {e}", flush=True)
 
 def get_rsc_telegram_stars_pricing():
     headers = {
@@ -146,6 +156,36 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
 def home():
     return "Digiseller-RSC Dynamic Integration Service is running successfully!", 200
 
+@app.route('/telegram-webhook', methods=['POST'])
+def telegram_webhook():
+    try:
+        data = request.get_json(silent=True) or {}
+        message = data.get("message", {})
+        text = message.get("text", "").strip().lower()
+        chat = message.get("chat", {})
+        chat_id = str(chat.get("id", ""))
+
+        if chat_id == TELEGRAM_CHAT_ID and (text in ["/price", "/prices", "/прайс", "прайс", "ціни"]):
+            stars_data = get_rsc_telegram_stars_pricing()
+            prem_data = get_rsc_telegram_premium_pricing()
+            
+            price_msg = "📊 <b>Актуальні ціни ReSellCodes (RSC):</b>\n\n"
+            
+            if stars_data:
+                price_msg += f"⭐ <b>Telegram Stars:</b>\n• Ціна за 1 зірку: <code>${stars_data.get('price_per_star', 'N/A')}</code>\n\n"
+            
+            if prem_data and "plans" in prem_data:
+                price_msg += "💎 <b>Telegram Premium:</b>\n"
+                for plan in prem_data["plans"]:
+                    price_msg += f"• {plan.get('months')} міс: <code>${plan.get('price_usd')}</code>\n"
+            
+            send_telegram(price_msg)
+
+        return jsonify({"status": "ok"}), 200
+    except Exception as e:
+        print(f"Telegram webhook error: {e}", flush=True)
+        return jsonify({"status": "error"}), 200
+
 @app.route('/webhook', methods=['POST', 'GET'])
 @app.route('/webhook/', methods=['POST', 'GET'])
 def digiseller_webhook():
@@ -157,9 +197,6 @@ def digiseller_webhook():
         
         merged = {**args_data, **form_data, **json_data, **values_data}
         
-        # ВИВОДИМО ПОВНИЙ ЗТЯГНУТИЙ СЛОВНИК В ЛОГИ RENDER, ЩОБ БАЧИТИ ВСІ ПОЛЯ
-        print(f"=== DIGISELLER WEBHOOK DUMP: {merged} ===", flush=True)
-
         product_id = str(merged.get('ID_G') or merged.get('id_g') or merged.get('ID_I') or merged.get('id_i') or merged.get('inv_id') or merged.get('order_id') or '')
         invoice_id = merged.get('ID_I') or merged.get('id_i') or merged.get('inv_id') or merged.get('order_id') or 'UNKNOWN'
         product_name = merged.get('name') or merged.get('goods_name') or ''
@@ -175,37 +212,28 @@ def digiseller_webhook():
         except ValueError:
             quantity = 50
 
-        # Шукаємо юзернейм серед усіх можливих ключів або вкладених параметрів
         telegram_username = ""
-        
-        # 1. Перебираємо ключі верхнього рівня
         for key in ['options_1', 'option1', 'text1', 'param1', 'account', 'username', 'telegram_username', 'comment', 'custom_field', 'field_1']:
             val = merged.get(key)
             if val and str(val).strip():
                 telegram_username = str(val).strip()
                 break
                 
-        # 2. Якщо не знайшли, шукаємо будь-яке значення, що містить символ '@' або схоже на нікнейм у всьому словнику
         if not telegram_username:
             for k, v in merged.items():
                 if v and isinstance(v, str):
                     v_str = v.strip()
                     if len(v_str) > 2 and v_str.lower() not in ["unknown", "none", "null", "50", "6349263"]:
-                        # Якщо це не схоже на звичайне системне число, беремо його як потенційний нік
                         if not v_str.isdigit():
                             telegram_username = v_str
                             break
 
         telegram_username = telegram_username.lstrip('@')
 
-        # ЗАХИСНИЙ РЕЖИМ ДЛЯ ТЕСТІВ: якщо юзернейм все одно порожній, ставимо тимчасово дуров, 
-        # щоб ти бачив чи проходить зв'язок з RSC API, а не падало на початковому кроці.
         if not telegram_username:
             telegram_username = "durov"
-            print("WARNING: Username was empty, fallback to 'durov' for testing purposes.", flush=True)
 
         if product_id and product_id != TARGET_PRODUCT_ID:
-            print(f"Ignored: Product ID {product_id} does not match target {TARGET_PRODUCT_ID}", flush=True)
             return jsonify({"status": "ignored", "reason": "Wrong product ID"}), 200
 
         product_type = "telegram_stars"
@@ -223,7 +251,6 @@ def digiseller_webhook():
                 months = 6
             elif "12" in name_lower or "год" in name_lower or "рік" in name_lower:
                 months = 12
-            
             extra_data["months"] = months
             
             prem_pricing = get_rsc_telegram_premium_pricing()
@@ -236,20 +263,13 @@ def digiseller_webhook():
                         except (ValueError, TypeError):
                             pass
                         break
-            
-            if plan_price:
-                max_allowed_usd = plan_price * 1.20
-            else:
-                max_allowed_usd = 50.00
+            max_allowed_usd = (plan_price * 1.20) if plan_price else 50.00
 
         elif "pubg" in name_lower or "uc" in name_lower:
             product_type = "gift_card"
             id_1 = "pubg_mobile"
             numbers = re.findall(r'\d+', product_name)
-            if numbers:
-                id_2 = f"{numbers[0]}_uc"
-            else:
-                id_2 = "60_uc"
+            id_2 = f"{numbers[0]}_uc" if numbers else "60_uc"
             
             pubg_catalog = get_rsc_gift_cards_catalog("pubg_mobile")
             card_price = None
@@ -261,20 +281,13 @@ def digiseller_webhook():
                         except (ValueError, TypeError):
                             pass
                         break
-            
-            if card_price:
-                max_allowed_usd = card_price * 1.20
-            else:
-                max_allowed_usd = 500.00
+            max_allowed_usd = (card_price * 1.20) if card_price else 500.00
 
         elif "robux" in name_lower or "roblox" in name_lower:
             product_type = "gift_card"
             id_1 = "roblox_global"
             numbers = re.findall(r'\d+', product_name)
-            if numbers:
-                id_2 = f"{numbers[0]}_robux"
-            else:
-                id_2 = "50_robux"
+            id_2 = f"{numbers[0]}_robux" if numbers else "50_robux"
             
             roblox_catalog = get_rsc_gift_cards_catalog("roblox_global")
             card_price = None
@@ -286,11 +299,7 @@ def digiseller_webhook():
                         except (ValueError, TypeError):
                             pass
                         break
-            
-            if card_price:
-                max_allowed_usd = card_price * 1.20
-            else:
-                max_allowed_usd = 15.00
+            max_allowed_usd = (card_price * 1.20) if card_price else 15.00
             
         elif "stars" in name_lower or "telegram" in name_lower:
             product_type = "telegram_stars"
@@ -301,14 +310,10 @@ def digiseller_webhook():
                     price_per_star = float(pricing_data["price_per_star"])
                 except (ValueError, TypeError):
                     pass
-
             calculated_cost = quantity * price_per_star
-            max_allowed_usd = calculated_cost * 1.20
-            if max_allowed_usd < 1.00:
-                max_allowed_usd = 1.00
+            max_allowed_usd = max(calculated_cost * 1.20, 1.00)
 
         if amount > 0 and amount > max_allowed_usd:
-            print(f"Rejected: Amount {amount} USD exceeds limit {max_allowed_usd} USD", flush=True)
             send_telegram(f"⚠️ <b>Order rejected due to price limit!</b>\nInvoice: <code>{invoice_id}</code>\nAmount: {amount} USD")
             return jsonify({"status": "rejected", "reason": "Amount exceeds limit"}), 200
 
@@ -345,6 +350,7 @@ def digiseller_webhook():
         return "INTERNAL ERROR", 500
 
 if __name__ == '__main__':
+    setup_telegram_webhook()
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
 
