@@ -81,20 +81,7 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
         "Accept": "application/json"
     }
     
-    if product_type == "telegram_stars":
-        order_url = f"{RSC_BASE_URL}/telegram/stars/buy"
-        username = extra_data.get("telegram_username", "") if extra_data else ""
-        if not username:
-            return None, "Missing telegram_username"
-        payload = {"telegram_username": username, "quantity": quantity}
-    elif product_type == "telegram_premium":
-        order_url = f"{RSC_BASE_URL}/telegram/premium/buy"
-        username = extra_data.get("telegram_username", "") if extra_data else ""
-        if not username:
-            return None, "Missing telegram_username"
-        months = extra_data.get("months", 3) if extra_data else 3
-        payload = {"telegram_username": username, "months": months}
-    elif product_type == "game_key":
+    if product_type == "game_key":
         order_url = f"{RSC_BASE_URL}/game-keys/order"
         payload = {"game_id": id_1, "key_id": id_2, "quantity": quantity}
         codes_key = "keys"
@@ -114,15 +101,6 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
     if response.status_code != 200:
         err_msg = res_data.get("error", {}).get("message", response.text)
         return None, f"API error (HTTP {response.status_code}): {err_msg}"
-
-    if product_type in ["telegram_stars", "telegram_premium"]:
-        order_status = res_data.get("status")
-        if order_status in ["processing", "completed"]:
-            charged = res_data.get("charged_usd", "0")
-            uname = res_data.get("telegram_username")
-            return f"Telegram order successfully processed!\nUsername: @{uname}\nCharged: ${charged}", None
-        else:
-            return None, f"Telegram order status: {order_status}, Reason: {res_data.get('status_reason')}"
 
     order_number = res_data.get("number")
     if not order_number:
@@ -154,7 +132,7 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
 
 @app.route('/')
 def home():
-    return "Digiseller-RSC Dynamic Integration Service is running successfully!", 200
+    return "Digiseller-RSC Dynamic Gift Code Integration Service is running successfully!", 200
 
 @app.route('/telegram-webhook', methods=['POST'])
 def telegram_webhook():
@@ -171,7 +149,7 @@ def telegram_webhook():
             pubg_data = get_rsc_gift_cards_catalog("pubg_mobile")
             roblox_data = get_rsc_gift_cards_catalog("roblox_global")
             
-            price_msg = "📊 <b>Повний актуальний прайс ReSellCodes (RSC):</b>\n\n"
+            price_msg = "📊 <b>Повний прайс ReSellCodes (RSC):</b>\n\n"
             
             if stars_data:
                 price_msg += f"⭐ <b>Telegram Stars:</b>\n• За 1 зірку: <code>${stars_data.get('price_per_star', 'N/A')}</code>\n\n"
@@ -184,7 +162,7 @@ def telegram_webhook():
 
             if pubg_data and isinstance(pubg_data, dict) and "offers" in pubg_data:
                 price_msg += "🎯 <b>PUBG Mobile UC:</b>\n"
-                for offer in pubg_data["offers"][:6]: # Виводимо перші варіанти для прикладу
+                for offer in pubg_data["offers"][:6]:
                     price_msg += f"• {offer.get('name', offer.get('card_id'))}: <code>${offer.get('price_usd')}</code>\n"
                 price_msg += "\n"
 
@@ -214,126 +192,50 @@ def digiseller_webhook():
         product_id = str(merged.get('ID_G') or merged.get('id_g') or merged.get('ID_I') or merged.get('id_i') or merged.get('inv_id') or merged.get('order_id') or '')
         invoice_id = merged.get('ID_I') or merged.get('id_i') or merged.get('inv_id') or merged.get('order_id') or 'UNKNOWN'
         product_name = merged.get('name') or merged.get('goods_name') or ''
-        
-        try:
-            amount = float(merged.get('Amount') or merged.get('amount') or merged.get('sum') or merged.get('OutSum') or 0)
-        except ValueError:
-            amount = 0.0
 
-        raw_qty = merged.get('cnt') or merged.get('quantity') or merged.get('amount_goods') or 50
+        raw_qty = merged.get('cnt') or merged.get('quantity') or merged.get('amount_goods') or 1
         try:
             quantity = int(raw_qty)
         except ValueError:
-            quantity = 50
-
-        telegram_username = ""
-        for key in ['options_1', 'option1', 'text1', 'param1', 'account', 'username', 'telegram_username', 'comment', 'custom_field', 'field_1']:
-            val = merged.get(key)
-            if val and str(val).strip():
-                telegram_username = str(val).strip()
-                break
-                
-        if not telegram_username:
-            for k, v in merged.items():
-                if v and isinstance(v, str):
-                    v_str = v.strip()
-                    if len(v_str) > 2 and v_str.lower() not in ["unknown", "none", "null", "50", "6349263"]:
-                        if not v_str.isdigit():
-                            telegram_username = v_str
-                            break
-
-        telegram_username = telegram_username.lstrip('@')
-
-        if not telegram_username:
-            telegram_username = "durov"
+            quantity = 1
 
         if product_id and product_id != TARGET_PRODUCT_ID:
             return jsonify({"status": "ignored", "reason": "Wrong product ID"}), 200
 
-        product_type = "telegram_stars"
+        product_type = "gift_card"
         id_1 = None
         id_2 = None
         extra_data = {}
-        max_allowed_usd = 50.00
 
         name_lower = product_name.lower()
         
         if "premium" in name_lower or "премиум" in name_lower:
-            product_type = "telegram_premium"
+            id_1 = "telegram_premium"
             months = 3
             if "6" in name_lower:
                 months = 6
             elif "12" in name_lower or "год" in name_lower or "рік" in name_lower:
                 months = 12
-            extra_data["months"] = months
-            
-            prem_pricing = get_rsc_telegram_premium_pricing()
-            plan_price = None
-            if prem_pricing and isinstance(prem_pricing, dict) and "plans" in prem_pricing:
-                for plan in prem_pricing["plans"]:
-                    if plan.get("months") == months:
-                        try:
-                            plan_price = float(plan.get("price_usd"))
-                        except (ValueError, TypeError):
-                            pass
-                        break
-            max_allowed_usd = (plan_price * 1.20) if plan_price else 50.00
-
+            id_2 = f"{months}_months"
+        elif "stars" in name_lower or "telegram" in name_lower:
+            id_1 = "telegram_stars"
+            numbers = re.findall(r'\d+', product_name)
+            stars_count = numbers[0] if numbers else "50"
+            id_2 = f"{stars_count}_stars"
         elif "pubg" in name_lower or "uc" in name_lower:
-            product_type = "gift_card"
             id_1 = "pubg_mobile"
             numbers = re.findall(r'\d+', product_name)
             id_2 = f"{numbers[0]}_uc" if numbers else "60_uc"
-            
-            pubg_catalog = get_rsc_gift_cards_catalog("pubg_mobile")
-            card_price = None
-            if pubg_catalog and isinstance(pubg_catalog, dict) and "offers" in pubg_catalog:
-                for offer in pubg_catalog["offers"]:
-                    if offer.get("card_id") == id_2:
-                        try:
-                            card_price = float(offer.get("price_usd"))
-                        except (ValueError, TypeError):
-                            pass
-                        break
-            max_allowed_usd = (card_price * 1.20) if card_price else 500.00
-
         elif "robux" in name_lower or "roblox" in name_lower:
-            product_type = "gift_card"
             id_1 = "roblox_global"
             numbers = re.findall(r'\d+', product_name)
             id_2 = f"{numbers[0]}_robux" if numbers else "50_robux"
-            
-            roblox_catalog = get_rsc_gift_cards_catalog("roblox_global")
-            card_price = None
-            if roblox_catalog and isinstance(roblox_catalog, dict) and "offers" in roblox_catalog:
-                for offer in roblox_catalog["offers"]:
-                    if offer.get("card_id") == id_2:
-                        try:
-                            card_price = float(offer.get("price_usd"))
-                        except (ValueError, TypeError):
-                            pass
-                        break
-            max_allowed_usd = (card_price * 1.20) if card_price else 15.00
-            
-        elif "stars" in name_lower or "telegram" in name_lower:
-            product_type = "telegram_stars"
-            pricing_data = get_rsc_telegram_stars_pricing()
-            price_per_star = 0.0152250
-            if pricing_data and isinstance(pricing_data, dict) and "price_per_star" in pricing_data:
-                try:
-                    price_per_star = float(pricing_data["price_per_star"])
-                except (ValueError, TypeError):
-                    pass
-            calculated_cost = quantity * price_per_star
-            max_allowed_usd = max(calculated_cost * 1.20, 1.00)
+        else:
+            id_1 = "telegram_stars"
+            id_2 = "50_stars"
 
-        if amount > 0 and amount > max_allowed_usd:
-            send_telegram(f"⚠️ <b>Order rejected due to price limit!</b>\nInvoice: <code>{invoice_id}</code>\nAmount: {amount} USD")
-            return jsonify({"status": "rejected", "reason": "Amount exceeds limit"}), 200
+        send_telegram(f"📥 <b>New order received!</b>\nInvoice: <code>{invoice_id}</code>\nProduct: {product_name}\nQty: {quantity}\nPurchasing Gift Code...")
 
-        send_telegram(f"📥 <b>New order received!</b>\nInvoice: <code>{invoice_id}</code>\nProduct: {product_name}\nTarget: @{telegram_username}\nQty: {quantity}\nPurchasing...")
-
-        extra_data["telegram_username"] = telegram_username
         issued_keys, error = execute_rsc_purchase(product_type, id_1, id_2, quantity, extra_data=extra_data)
 
         if error:
@@ -341,7 +243,6 @@ def digiseller_webhook():
                 f"🚨 <b>AUTOMATED PURCHASE ERROR!</b>\n\n"
                 f"🆔 <b>Invoice:</b> <code>{invoice_id}</code>\n"
                 f"📦 <b>Product:</b> {product_name}\n"
-                f"👤 <b>Username:</b> @{telegram_username}\n"
                 f"❌ <b>Error:</b> {error}\n\n"
                 f"⚠️ <i>Fulfill the order manually!</i>"
             )
@@ -349,10 +250,9 @@ def digiseller_webhook():
             return "Error processing order via API. Manual fulfillment required.", 200
 
         success_msg = (
-            f"🛒 <b>SUCCESSFUL AUTO-ORDER!</b>\n\n"
+            f"🛒 <b>SUCCESSFUL AUTO-ORDER (GIFT CODE)!</b>\n\n"
             f"🆔 <b>Digiseller Invoice:</b> <code>{invoice_id}</code>\n"
-            f"👤 <b>Target:</b> @{telegram_username}\n"
-            f"🔑 <b>Result:</b>\n<code>{issued_keys}</code>"
+            f"🔑 <b>Issued Code:</b>\n<code>{issued_keys}</code>"
         )
         send_telegram(success_msg)
         
