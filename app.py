@@ -216,25 +216,69 @@ def digiseller_webhook():
                 months = 6
             elif "12" in name_lower or "год" in name_lower or "рік" in name_lower:
                 months = 12
+            
+            # Динамічний пошук card_id для premium
+            catalog = get_rsc_gift_cards_catalog(id_1)
             id_2 = f"{months}_months"
+            if catalog:
+                cards_list = catalog if isinstance(catalog, list) else catalog.get("offers", [])
+                for card in cards_list:
+                    c_id = str(card.get("card_id", ""))
+                    if str(months) in c_id:
+                        id_2 = card.get("card_id")
+                        break
+
         elif "stars" in name_lower or "telegram" in name_lower:
             id_1 = "telegram_stars"
             numbers = re.findall(r'\d+', product_name)
             stars_count = numbers[0] if numbers else "50"
+            
+            # Динамічний пошук точного card_id з каталогу RSC за кількістю зірок
+            catalog = get_rsc_gift_cards_catalog(id_1)
             id_2 = f"{stars_count}_stars"
+            if catalog:
+                cards_list = catalog if isinstance(catalog, list) else catalog.get("offers", [])
+                for card in cards_list:
+                    c_id = str(card.get("card_id", ""))
+                    c_name = str(card.get("name", ""))
+                    if stars_count in c_id or stars_count in c_name:
+                        id_2 = card.get("card_id")
+                        break
+
         elif "pubg" in name_lower or "uc" in name_lower:
             id_1 = "pubg_mobile"
             numbers = re.findall(r'\d+', product_name)
-            id_2 = f"{numbers[0]}_uc" if numbers else "60_uc"
+            uc_count = numbers[0] if numbers else "60"
+            
+            catalog = get_rsc_gift_cards_catalog(id_1)
+            id_2 = f"{uc_count}_uc"
+            if catalog:
+                cards_list = catalog if isinstance(catalog, list) else catalog.get("offers", [])
+                for card in cards_list:
+                    c_id = str(card.get("card_id", ""))
+                    if uc_count in c_id:
+                        id_2 = card.get("card_id")
+                        break
+
         elif "robux" in name_lower or "roblox" in name_lower:
             id_1 = "roblox_global"
             numbers = re.findall(r'\d+', product_name)
-            id_2 = f"{numbers[0]}_robux" if numbers else "50_robux"
+            robux_count = numbers[0] if numbers else "50"
+            
+            catalog = get_rsc_gift_cards_catalog(id_1)
+            id_2 = f"{robux_count}_robux"
+            if catalog:
+                cards_list = catalog if isinstance(catalog, list) else catalog.get("offers", [])
+                for card in cards_list:
+                    c_id = str(card.get("card_id", ""))
+                    if robux_count in c_id:
+                        id_2 = card.get("card_id")
+                        break
         else:
             id_1 = "telegram_stars"
             id_2 = "50_stars"
 
-        send_telegram(f"📥 <b>New order received!</b>\nInvoice: <code>{invoice_id}</code>\nProduct: {product_name}\nQty: {quantity}\nPurchasing Gift Code...")
+        send_telegram(f"📥 <b>New order received!</b>\nInvoice: <code>{invoice_id}</code>\nProduct: {product_name}\nQty: {quantity}\nResolved card_id: <code>{id_2}</code>\nPurchasing Gift Code...")
 
         issued_keys, error = execute_rsc_purchase(product_type, id_1, id_2, quantity, extra_data=extra_data)
 
