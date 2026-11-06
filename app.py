@@ -84,68 +84,50 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
     if extra_data is None:
         extra_data = {}
 
-    response = None
-    codes_key = "keys"
+    username = extra_data.get("username", "")
 
     if product_type == "telegram_stars":
-        # Автоматичний перебір можливих роутів для зірок, щоб уникнути 404
-        candidate_urls = [
-            f"{RSC_BASE_URL}/telegram/stars/order",
-            f"{RSC_BASE_URL}/telegram/stars/buy",
-            f"{RSC_BASE_URL}/orders"
-        ]
-        payloads = [
-            {"quantity": quantity, "recipient": extra_data.get("username", "")},
-            {"quantity": quantity, "recipient": extra_data.get("username", "")},
-            {"type": "telegram_stars", "quantity": quantity, "recipient": extra_data.get("username", "")}
-        ]
-        
-        for url, payload in zip(candidate_urls, payloads):
-            try:
-                resp = requests.post(url, json=payload, headers=headers, timeout=15)
-                print(f"Trying URL {url} -> Status: {resp.status_code}", flush=True)
-                if resp.status_code != 404:
-                    response = resp
-                    break
-            except Exception:
-                continue
-        if response is None:
-            response = requests.post(f"{RSC_BASE_URL}/telegram/stars/order", json={"quantity": quantity, "recipient": extra_data.get("username", "")}, headers=headers, timeout=15)
-
+        order_url = f"{RSC_BASE_URL}/telegram/stars/order"
+        payload = {
+            "quantity": quantity,
+            "telegram_username": username
+        }
+        codes_key = "keys"
     elif product_type == "telegram_premium":
         order_url = f"{RSC_BASE_URL}/telegram/premium/order"
         payload = {
             "months": extra_data.get("months", 3),
-            "recipient": extra_data.get("username", "")
+            "telegram_username": username
         }
         codes_key = "keys"
-        response = requests.post(order_url, json=payload, headers=headers, timeout=15)
-
     elif product_type == "game_key":
         order_url = f"{RSC_BASE_URL}/game-keys/order"
         payload = {"game_id": id_1, "key_id": id_2, "quantity": quantity}
         codes_key = "keys"
-        response = requests.post(order_url, json=payload, headers=headers, timeout=15)
-
     elif product_type == "gift_card":
         order_url = f"{RSC_BASE_URL}/gift-cards/order"
         payload = {"category_id": id_1, "card_id": id_2, "quantity": quantity}
         codes_key = "codes"
-        response = requests.post(order_url, json=payload, headers=headers, timeout=15)
     else:
         return None, "Unknown product type"
 
     try:
+        response = requests.post(order_url, json=payload, headers=headers, timeout=15)
         print(f"RSC Raw Response Status: {response.status_code}, Text: {response.text}", flush=True)
-        res_data = response.json()
-    except Exception:
-        return None, f"RSC returned non-JSON response (HTTP {response.status_code}): {response.text[:200]}"
+        
+        try:
+            res_data = response.json()
+        except Exception:
+            return None, f"RSC returned non-JSON response (HTTP {response.status_code}): {response.text[:200]}"
+            
+    except Exception as e:
+        return None, f"Connection error during order: {e}"
 
     if response.status_code != 200:
         err_msg = res_data.get("error", {}).get("message", response.text)
         return None, f"API error (HTTP {response.status_code}): {err_msg}"
 
-    order_number = res_data.get("number") or res_data.get("order_id")
+    order_number = res_data.get("number")
     if not order_number:
         if "status" in res_data and res_data.get("status") == "completed":
             return "Поповнення виконано успішно!", None
