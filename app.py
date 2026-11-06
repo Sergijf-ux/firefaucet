@@ -84,28 +84,30 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
     if extra_data is None:
         extra_data = {}
 
-    # Повертаємо оригінальний робочий шлях з /order на кінці для POST-запиту
+    # Універсальний ендпоінт замовлень RSC
+    order_url = f"{RSC_BASE_URL}/orders"
+    
     if product_type == "telegram_stars":
-        order_url = f"{RSC_BASE_URL}/telegram/stars/order"
         payload = {
+            "type": "telegram_stars",
             "quantity": quantity,
             "recipient": extra_data.get("username", "")
         }
         codes_key = "keys"
     elif product_type == "telegram_premium":
-        order_url = f"{RSC_BASE_URL}/telegram/premium/order"
         payload = {
+            "type": "telegram_premium",
             "months": extra_data.get("months", 3),
             "recipient": extra_data.get("username", "")
         }
         codes_key = "keys"
-    elif product_type == "game_key":
-        order_url = f"{RSC_BASE_URL}/game-keys/order"
-        payload = {"game_id": id_1, "key_id": id_2, "quantity": quantity}
-        codes_key = "keys"
     elif product_type == "gift_card":
-        order_url = f"{RSC_BASE_URL}/gift-cards/order"
-        payload = {"category_id": id_1, "card_id": id_2, "quantity": quantity}
+        payload = {
+            "type": "gift_card",
+            "category_id": id_1,
+            "card_id": id_2,
+            "quantity": quantity
+        }
         codes_key = "codes"
     else:
         return None, "Unknown product type"
@@ -126,7 +128,7 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
         err_msg = res_data.get("error", {}).get("message", response.text)
         return None, f"API error (HTTP {response.status_code}): {err_msg}"
 
-    order_number = res_data.get("number")
+    order_number = res_data.get("number") or res_data.get("order_id")
     if not order_number:
         if "status" in res_data and res_data.get("status") == "completed":
             return "Поповнення виконано успішно!", None
@@ -204,7 +206,7 @@ def telegram_webhook():
         return jsonify({"status": "ok"}), 200
     except Exception as e:
         print(f"Telegram webhook error: {e}", flush=True)
-        return jsonify({"status": "error"}), 200
+        return jsonify({"status": "error"}}, 200
 
 @app.route('/webhook', methods=['POST', 'GET'])
 @app.route('/webhook/', methods=['POST', 'GET'])
@@ -258,6 +260,7 @@ def digiseller_webhook():
 
         name_lower = product_name.lower()
         
+        # Виправлена логіка: спочатку перевіряємо Premium, щоб він не перехоплювався зірками
         if "premium" in name_lower or "премиум" in name_lower:
             product_type = "telegram_premium"
             months = 3
