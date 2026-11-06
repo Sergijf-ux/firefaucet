@@ -86,23 +86,21 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
 
     username = extra_data.get("username", "").replace("@", "").strip()
 
-    # Використовуємо універсальний ендпоінт замовлень /orders з повним набором полів
+    # Єдиний правильний ендпоінт для створення будь-яких замовлень через API RSC
     order_url = f"{RSC_BASE_URL}/orders"
     
     if product_type == "telegram_stars":
         payload = {
             "type": "telegram_stars",
             "quantity": quantity,
-            "telegram_username": username,
-            "recipient": username
+            "telegram_username": username
         }
         codes_key = "keys"
     elif product_type == "telegram_premium":
         payload = {
             "type": "telegram_premium",
             "months": extra_data.get("months", 3),
-            "telegram_username": username,
-            "recipient": username
+            "telegram_username": username
         }
         codes_key = "keys"
     elif product_type == "game_key":
