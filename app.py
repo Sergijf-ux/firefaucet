@@ -81,7 +81,25 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
         "Accept": "application/json"
     }
     
-    if product_type == "game_key":
+    if extra_data is None:
+        extra_data = {}
+
+    # Автоматичне визначення правильного ендпоінту та коду для RSC
+    if product_type == "telegram_stars":
+        order_url = f"{RSC_BASE_URL}/telegram/stars/order"
+        payload = {
+            "quantity": quantity,
+            "recipient": extra_data.get("username", "")
+        }
+        codes_key = "keys"
+    elif product_type == "telegram_premium":
+        order_url = f"{RSC_BASE_URL}/telegram/premium/order"
+        payload = {
+            "months": extra_data.get("months", 3),
+            "recipient": extra_data.get("username", "")
+        }
+        codes_key = "keys"
+    elif product_type == "game_key":
         order_url = f"{RSC_BASE_URL}/game-keys/order"
         payload = {"game_id": id_1, "key_id": id_2, "quantity": quantity}
         codes_key = "keys"
@@ -104,7 +122,9 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
 
     order_number = res_data.get("number")
     if not order_number:
-        return None, "RSC server did not return an order number (number)"
+        if "status" in res_data and res_data.get("status") == "completed":
+            return "Поповнення виконано успішно!", None
+        return None, "Резерв/Замовлення створено, але RSC сервер не повернув номер замовлення (number)"
 
     poll_url = f"{RSC_BASE_URL}/orders/{order_number}"
     max_attempts = 40
@@ -119,10 +139,12 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
 
         status = poll_data.get("status")
         if status == "completed":
-            items = poll_data.get(codes_key, [])
+            items = poll_data.get(codes_key) or poll_data.get("keys") or poll_data.get("codes")
             if items:
-                return "\n".join(items), None
-            return None, "Order completed, but the items list is empty"
+                if isinstance(items, list):
+                    return "\n".join(str(i) for i in items), None
+                return str(items), None
+            return "Замовлення виконано успішно! Автопоповнення пройшло.", None
         if status in ["failed", "refund"]:
             fail_reason = poll_data.get("fail_code", "unknown_fail")
             reason_text = poll_data.get("status_reason", "")
@@ -132,7 +154,7 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
 
 @app.route('/')
 def home():
-    return "Digiseller-RSC Dynamic Gift Code Integration Service is running successfully!", 200
+    return "Digiseller-RSC Dynamic Gift Code & Telegram Integration Service is running successfully!", 200
 
 @app.route('/telegram-webhook', methods=['POST'])
 def telegram_webhook():
@@ -181,6 +203,10 @@ def telegram_webhook():
 @app.route('/webhook', methods=['POST', 'GET'])
 @app.route('/webhook/', methods=['POST', 'GET'])
 def digiseller_webhook():
+    # Обробка GET-запиту (тестовий пінг / перевірка адреси від Digiseller)
+    if request.method == 'GET':
+        return "OK", 200
+
     try:
         args_data = request.args.to_dict()
         form_data = request.form.to_dict()
@@ -202,50 +228,52 @@ def digiseller_webhook():
         if product_id and product_id != TARGET_PRODUCT_ID:
             return jsonify({"status": "ignored", "reason": "Wrong product ID"}), 200
 
+        # Витягуємо юзернейм покупця
+        extracted_username = ""
+        details = merged.get('details') or merged.get('options') or merged.get('param') or {}
+        if isinstance(details, dict):
+            for k, v in details.items():
+                if isinstance(v, str) and ("@" in v or "t.me" in v or len(v) >= 3):
+                    extracted_username = v.strip()
+                    break
+        elif isinstance(details, str):
+            extracted_username = details.strip()
+        
+        for key, val in merged.items():
+            if isinstance(val, str) and val.startswith("@"):
+                extracted_username = val.strip()
+                break
+
+        if extracted_username:
+            extracted_username = extracted_username.replace("https://t.me/", "").replace("@", "").strip()
+
         product_type = "gift_card"
         id_1 = None
         id_2 = None
-        extra_data = {}
+        extra_data = {"username": extracted_username}
 
         name_lower = product_name.lower()
         
         if "premium" in name_lower or "премиум" in name_lower:
-            id_1 = "telegram_premium"
+            product_type = "telegram_premium"
             months = 3
             if "6" in name_lower:
                 months = 6
             elif "12" in name_lower or "год" in name_lower or "рік" in name_lower:
                 months = 12
-            
-            # Динамічний пошук card_id для premium
-            catalog = get_rsc_gift_cards_catalog(id_1)
+            extra_data["months"] = months
+            id_1 = "telegram_premium"
             id_2 = f"{months}_months"
-            if catalog:
-                cards_list = catalog if isinstance(catalog, list) else catalog.get("offers", [])
-                for card in cards_list:
-                    c_id = str(card.get("card_id", ""))
-                    if str(months) in c_id:
-                        id_2 = card.get("card_id")
-                        break
 
         elif "stars" in name_lower or "telegram" in name_lower:
-            id_1 = "telegram_stars"
+            product_type = "telegram_stars"
             numbers = re.findall(r'\d+', product_name)
-            stars_count = numbers[0] if numbers else "50"
-            
-            # Динамічний пошук точного card_id з каталогу RSC за кількістю зірок
-            catalog = get_rsc_gift_cards_catalog(id_1)
+            stars_count = int(numbers[0]) if numbers else 50
+            id_1 = "telegram_stars"
             id_2 = f"{stars_count}_stars"
-            if catalog:
-                cards_list = catalog if isinstance(catalog, list) else catalog.get("offers", [])
-                for card in cards_list:
-                    c_id = str(card.get("card_id", ""))
-                    c_name = str(card.get("name", ""))
-                    if stars_count in c_id or stars_count in c_name:
-                        id_2 = card.get("card_id")
-                        break
 
         elif "pubg" in name_lower or "uc" in name_lower:
+            product_type = "gift_card"
             id_1 = "pubg_mobile"
             numbers = re.findall(r'\d+', product_name)
             uc_count = numbers[0] if numbers else "60"
@@ -261,6 +289,7 @@ def digiseller_webhook():
                         break
 
         elif "robux" in name_lower or "roblox" in name_lower:
+            product_type = "gift_card"
             id_1 = "roblox_global"
             numbers = re.findall(r'\d+', product_name)
             robux_count = numbers[0] if numbers else "50"
@@ -275,10 +304,11 @@ def digiseller_webhook():
                         id_2 = card.get("card_id")
                         break
         else:
+            product_type = "telegram_stars"
             id_1 = "telegram_stars"
-            id_2 = "50_stars"
+            id_2 = f"{quantity}_stars"
 
-        send_telegram(f"📥 <b>New order received!</b>\nInvoice: <code>{invoice_id}</code>\nProduct: {product_name}\nQty: {quantity}\nResolved card_id: <code>{id_2}</code>\nPurchasing Gift Code...")
+        send_telegram(f"📥 <b>New order received!</b>\nInvoice: <code>{invoice_id}</code>\nProduct: {product_name}\nQty: {quantity}\nUsername: <code>@{extracted_username if extracted_username else 'Not specified'}</code>\nExecuting Auto-Purchase...")
 
         issued_keys, error = execute_rsc_purchase(product_type, id_1, id_2, quantity, extra_data=extra_data)
 
@@ -287,6 +317,7 @@ def digiseller_webhook():
                 f"🚨 <b>AUTOMATED PURCHASE ERROR!</b>\n\n"
                 f"🆔 <b>Invoice:</b> <code>{invoice_id}</code>\n"
                 f"📦 <b>Product:</b> {product_name}\n"
+                f"👤 <b>Username:</b> @{extracted_username}\n"
                 f"❌ <b>Error:</b> {error}\n\n"
                 f"⚠️ <i>Fulfill the order manually!</i>"
             )
@@ -294,13 +325,14 @@ def digiseller_webhook():
             return "Error processing order via API. Manual fulfillment required.", 200
 
         success_msg = (
-            f"🛒 <b>SUCCESSFUL AUTO-ORDER (GIFT CODE)!</b>\n\n"
+            f"🛒 <b>SUCCESSFUL AUTO-ORDER!</b>\n\n"
             f"🆔 <b>Digiseller Invoice:</b> <code>{invoice_id}</code>\n"
-            f"🔑 <b>Issued Code:</b>\n<code>{issued_keys}</code>"
+            f"👤 <b>Recipient:</b> @{extracted_username}\n"
+            f"🔑 <b>Result / Issued Info:</b>\n<code>{issued_keys}</code>"
         )
         send_telegram(success_msg)
         
-        return issued_keys, 200
+        return str(issued_keys), 200
 
     except Exception as e:
         print(f"Webhook internal exception: {e}", flush=True)
