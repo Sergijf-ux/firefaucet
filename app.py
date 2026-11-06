@@ -84,8 +84,9 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
     if extra_data is None:
         extra_data = {}
 
+    # Правильні ендпоінти RSC (виправлено шлях для telegram_stars)
     if product_type == "telegram_stars":
-        order_url = f"{RSC_BASE_URL}/telegram/stars/order"
+        order_url = f"{RSC_BASE_URL}/telegram/stars"
         payload = {
             "quantity": quantity,
             "recipient": extra_data.get("username", "")
@@ -115,7 +116,7 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
         
         try:
             res_data = response.json()
-        except Exception as json_err:
+        except Exception:
             return None, f"RSC returned non-JSON response (HTTP {response.status_code}): {response.text[:200]}"
             
     except Exception as e:
