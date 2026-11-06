@@ -84,40 +84,33 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
     if extra_data is None:
         extra_data = {}
 
-    username = extra_data.get("username", "").replace("@", "").strip()
+    username = extra_data.get("username", "").strip()
 
-    # Єдиний правильний ендпоінт для створення будь-яких замовлень через API RSC
-    order_url = f"{RSC_BASE_URL}/orders"
-    
     if product_type == "telegram_stars":
+        order_url = f"{RSC_BASE_URL}/telegram/stars/order"
         payload = {
-            "type": "telegram_stars",
-            "quantity": quantity,
-            "telegram_username": username
+            "telegram_username": username,
+            "username": username,
+            "recipient": username,
+            "quantity": quantity
         }
         codes_key = "keys"
     elif product_type == "telegram_premium":
+        order_url = f"{RSC_BASE_URL}/telegram/premium/order"
         payload = {
-            "type": "telegram_premium",
-            "months": extra_data.get("months", 3),
-            "telegram_username": username
+            "telegram_username": username,
+            "username": username,
+            "recipient": username,
+            "months": extra_data.get("months", 3)
         }
         codes_key = "keys"
     elif product_type == "game_key":
-        payload = {
-            "type": "game_key",
-            "game_id": id_1,
-            "key_id": id_2,
-            "quantity": quantity
-        }
+        order_url = f"{RSC_BASE_URL}/game-keys/order"
+        payload = {"game_id": id_1, "key_id": id_2, "quantity": quantity}
         codes_key = "keys"
     elif product_type == "gift_card":
-        payload = {
-            "type": "gift_card",
-            "category_id": id_1,
-            "card_id": id_2,
-            "quantity": quantity
-        }
+        order_url = f"{RSC_BASE_URL}/gift-cards/order"
+        payload = {"category_id": id_1, "card_id": id_2, "quantity": quantity}
         codes_key = "codes"
     else:
         return None, "Unknown product type"
