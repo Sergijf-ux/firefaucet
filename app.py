@@ -84,7 +84,6 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
     if extra_data is None:
         extra_data = {}
 
-    # Автоматичне визначення правильного ендпоінту та коду для RSC
     if product_type == "telegram_stars":
         order_url = f"{RSC_BASE_URL}/telegram/stars/order"
         payload = {
@@ -112,7 +111,13 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
 
     try:
         response = requests.post(order_url, json=payload, headers=headers, timeout=15)
-        res_data = response.json()
+        print(f"RSC Raw Response Status: {response.status_code}, Text: {response.text}", flush=True)
+        
+        try:
+            res_data = response.json()
+        except Exception as json_err:
+            return None, f"RSC returned non-JSON response (HTTP {response.status_code}): {response.text[:200]}"
+            
     except Exception as e:
         return None, f"Connection error during order: {e}"
 
@@ -124,7 +129,7 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
     if not order_number:
         if "status" in res_data and res_data.get("status") == "completed":
             return "Поповнення виконано успішно!", None
-        return None, "Резерв/Замовлення створено, але RSC сервер не повернув номер замовлення (number)"
+        return None, f"RSC server did not return order number. Response: {res_data}"
 
     poll_url = f"{RSC_BASE_URL}/orders/{order_number}"
     max_attempts = 40
@@ -203,7 +208,6 @@ def telegram_webhook():
 @app.route('/webhook', methods=['POST', 'GET'])
 @app.route('/webhook/', methods=['POST', 'GET'])
 def digiseller_webhook():
-    # Обробка GET-запиту (тестовий пінг / перевірка адреси від Digiseller)
     if request.method == 'GET':
         return "OK", 200
 
@@ -228,7 +232,6 @@ def digiseller_webhook():
         if product_id and product_id != TARGET_PRODUCT_ID:
             return jsonify({"status": "ignored", "reason": "Wrong product ID"}), 200
 
-        # Витягуємо юзернейм покупця
         extracted_username = ""
         details = merged.get('details') or merged.get('options') or merged.get('param') or {}
         if isinstance(details, dict):
