@@ -84,9 +84,9 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
     if extra_data is None:
         extra_data = {}
 
-    # Правильні ендпоінти RSC (виправлено шлях для telegram_stars)
+    # Повертаємо оригінальний робочий шлях з /order на кінці для POST-запиту
     if product_type == "telegram_stars":
-        order_url = f"{RSC_BASE_URL}/telegram/stars"
+        order_url = f"{RSC_BASE_URL}/telegram/stars/order"
         payload = {
             "quantity": quantity,
             "recipient": extra_data.get("username", "")
