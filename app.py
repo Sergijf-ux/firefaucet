@@ -84,29 +84,42 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
     if extra_data is None:
         extra_data = {}
 
-    username = extra_data.get("username", "")
+    username = extra_data.get("username", "").replace("@", "").strip()
 
+    # Використовуємо універсальний ендпоінт замовлень /orders з повним набором полів
+    order_url = f"{RSC_BASE_URL}/orders"
+    
     if product_type == "telegram_stars":
-        order_url = f"{RSC_BASE_URL}/telegram/stars/order"
         payload = {
+            "type": "telegram_stars",
             "quantity": quantity,
-            "telegram_username": username
+            "telegram_username": username,
+            "recipient": username
         }
         codes_key = "keys"
     elif product_type == "telegram_premium":
-        order_url = f"{RSC_BASE_URL}/telegram/premium/order"
         payload = {
+            "type": "telegram_premium",
             "months": extra_data.get("months", 3),
-            "telegram_username": username
+            "telegram_username": username,
+            "recipient": username
         }
         codes_key = "keys"
     elif product_type == "game_key":
-        order_url = f"{RSC_BASE_URL}/game-keys/order"
-        payload = {"game_id": id_1, "key_id": id_2, "quantity": quantity}
+        payload = {
+            "type": "game_key",
+            "game_id": id_1,
+            "key_id": id_2,
+            "quantity": quantity
+        }
         codes_key = "keys"
     elif product_type == "gift_card":
-        order_url = f"{RSC_BASE_URL}/gift-cards/order"
-        payload = {"category_id": id_1, "card_id": id_2, "quantity": quantity}
+        payload = {
+            "type": "gift_card",
+            "category_id": id_1,
+            "card_id": id_2,
+            "quantity": quantity
+        }
         codes_key = "codes"
     else:
         return None, "Unknown product type"
@@ -127,7 +140,7 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
         err_msg = res_data.get("error", {}).get("message", response.text)
         return None, f"API error (HTTP {response.status_code}): {err_msg}"
 
-    order_number = res_data.get("number")
+    order_number = res_data.get("number") or res_data.get("order_id")
     if not order_number:
         if "status" in res_data and res_data.get("status") == "completed":
             return "Поповнення виконано успішно!", None
