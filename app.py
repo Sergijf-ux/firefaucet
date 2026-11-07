@@ -8,7 +8,6 @@ app = Flask(__name__)
 app.url_map.strict_slashes = False
 
 # --- CONFIGURATION ---
-# Шукаєш цей рядок на початку main.py:
 TELEGRAM_BOT_TOKEN = "9030923274:AAHoLPCafZSZ-WrTi6kZr1vEDQtrjueNgPg"
 TELEGRAM_CHAT_ID = "8508676381"
 RESELL_CODES_API_KEY = "rsc_live_b61d7b4894461371f7ed9b636752c35ac703a6d5c4625cda"
@@ -131,6 +130,96 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
 
     return None, "Order execution timeout (Polling timeout)"
 
+# --- ADDED: Telegram Stars & Premium Direct Purchase Functions ---
+def execute_rsc_telegram_stars_order(username, quantity):
+    """Виконує пряму покупку Telegram Stars через /telegram/stars/buy[cite: 3]"""
+    headers = {
+        "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+    payload = {
+        "telegram_username": username,
+        "quantity": int(quantity)
+    }
+    try:
+        response = requests.post(f"{RSC_BASE_URL}/telegram/stars/buy", json=payload, headers=headers, timeout=15)
+        res_data = response.json()
+    except Exception as e:
+        return None, f"Connection error during stars order: {e}"
+
+    if response.status_code != 200:
+        err_msg = res_data.get("error", {}).get("message", response.text)
+        return None, f"API error (HTTP {response.status_code}): {err_msg}"
+
+    order_number = res_data.get("number")
+    if not order_number:
+        return None, "RSC server did not return an order number (number)"
+
+    poll_url = f"{RSC_BASE_URL}/orders/{order_number}"
+    for _ in range(40):
+        time.sleep(3)
+        try:
+            poll_resp = requests.get(poll_url, headers=headers, timeout=10)
+            poll_data = poll_resp.json()
+        except Exception:
+            continue
+
+        status = poll_data.get("status")
+        if status == "completed":
+            return f"Order #{order_number} completed successfully for @{username} ({quantity} Stars)", None
+        if status in ["failed", "refund"]:
+            fail_reason = poll_data.get("fail_code", "unknown_fail")
+            reason_text = poll_data.get("status_reason", "")
+            return None, f"Order canceled/refunded. Reason: {fail_reason} ({reason_text})"
+
+    return None, "Order execution timeout (Polling timeout)"
+
+def execute_rsc_telegram_premium_order(username, months):
+    """Виконує пряму покупку Telegram Premium через /telegram/premium/buy[cite: 6]"""
+    headers = {
+        "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+    payload = {
+        "telegram_username": username,
+        "months": int(months)
+    }
+    try:
+        response = requests.post(f"{RSC_BASE_URL}/telegram/premium/buy", json=payload, headers=headers, timeout=15)
+        res_data = response.json()
+    except Exception as e:
+        return None, f"Connection error during premium order: {e}"
+
+    if response.status_code != 200:
+        err_msg = res_data.get("error", {}).get("message", response.text)
+        return None, f"API error (HTTP {response.status_code}): {err_msg}"
+
+    order_number = res_data.get("number")
+    if not order_number:
+        return None, "RSC server did not return an order number (number)"
+
+    poll_url = f"{RSC_BASE_URL}/orders/{order_number}"
+    for _ in range(40):
+        time.sleep(3)
+        try:
+            poll_resp = requests.get(poll_url, headers=headers, timeout=10)
+            poll_data = poll_resp.json()
+        except Exception:
+            continue
+
+        status = poll_data.get("status")
+        if status == "completed":
+            return f"Order #{order_number} completed successfully for @{username} ({months} months Premium)", None
+        if status in ["failed", "refund"]:
+            fail_reason = poll_data.get("fail_code", "unknown_fail")
+            reason_text = poll_data.get("status_reason", "")
+            return None, f"Order canceled/refunded. Reason: {fail_reason} ({reason_text})"
+
+    return None, "Order execution timeout (Polling timeout)"
+# -------------------------------------------------------------
+
 @app.route('/')
 def home():
     return "Digiseller-RSC Dynamic Gift Code Integration Service is running successfully!", 200
@@ -203,50 +292,77 @@ def digiseller_webhook():
         if product_id and product_id != TARGET_PRODUCT_ID:
             return jsonify({"status": "ignored", "reason": "Wrong product ID"}), 200
 
-        product_type = "gift_card"
-        id_1 = None
-        id_2 = None
-        extra_data = {}
+        # Витягуємо юзернейм покупця з полів Digiseller (param / username / account)
+        buyer_username = merged.get('param') or merged.get('username') or merged.get('account') or 'durov'
+        buyer_username = buyer_username.replace('@', '').strip()
 
         name_lower = product_name.lower()
         
+        # --- ADDED: Handle Telegram Premium Direct Order ---
         if "premium" in name_lower or "премиум" in name_lower:
-            id_1 = "telegram_premium"
             months = 3
             if "6" in name_lower:
                 months = 6
             elif "12" in name_lower or "год" in name_lower or "рік" in name_lower:
                 months = 12
-            
-            # Динамічний пошук card_id для premium
-            catalog = get_rsc_gift_cards_catalog(id_1)
-            id_2 = f"{months}_months"
-            if catalog:
-                cards_list = catalog if isinstance(catalog, list) else catalog.get("offers", [])
-                for card in cards_list:
-                    c_id = str(card.get("card_id", ""))
-                    if str(months) in c_id:
-                        id_2 = card.get("card_id")
-                        break
 
-        elif "stars" in name_lower or "telegram" in name_lower:
-            id_1 = "telegram_stars"
+            send_telegram(f"💎 <b>New Telegram Premium order!</b>\nInvoice: <code>{invoice_id}</code>\nUsername: @{buyer_username}\nMonths: {months}\nProcessing via API...")
+            
+            issued_result, error = execute_rsc_telegram_premium_order(buyer_username, months)
+            
+            if error:
+                alert_msg = (
+                    f"🚨 <b>PREMIUM PURCHASE ERROR!</b>\n\n"
+                    f"🆔 <b>Invoice:</b> <code>{invoice_id}</code>\n"
+                    f"❌ <b>Error:</b> {error}\n\n"
+                    f"⚠️ <i>Fulfill the order manually!</i>"
+                )
+                send_telegram(alert_msg)
+                return "Error processing premium via API.", 200
+
+            success_msg = (
+                f"🛒 <b>SUCCESSFUL TELEGRAM PREMIUM ORDER!</b>\n\n"
+                f"🆔 <b>Invoice:</b> <code>{invoice_id}</code>\n"
+                f"💎 <b>Details:</b> {issued_result}"
+            )
+            send_telegram(success_msg)
+            return issued_result, 200
+
+        # --- ADDED: Handle Telegram Stars Direct Order ---
+        elif "stars" in name_lower or "зірки" in name_lower or "звезд" in name_lower:
             numbers = re.findall(r'\d+', product_name)
-            stars_count = numbers[0] if numbers else "50"
-            
-            # Динамічний пошук точного card_id з каталогу RSC за кількістю зірок
-            catalog = get_rsc_gift_cards_catalog(id_1)
-            id_2 = f"{stars_count}_stars"
-            if catalog:
-                cards_list = catalog if isinstance(catalog, list) else catalog.get("offers", [])
-                for card in cards_list:
-                    c_id = str(card.get("card_id", ""))
-                    c_name = str(card.get("name", ""))
-                    if stars_count in c_id or stars_count in c_name:
-                        id_2 = card.get("card_id")
-                        break
+            base_stars = int(numbers[0]) if numbers else 50
+            total_stars = base_stars * quantity
 
-        elif "pubg" in name_lower or "uc" in name_lower:
+            send_telegram(f"⭐ <b>New Telegram Stars order!</b>\nInvoice: <code>{invoice_id}</code>\nUsername: @{buyer_username}\nStars: {total_stars}\nProcessing via API...")
+            
+            issued_result, error = execute_rsc_telegram_stars_order(buyer_username, total_stars)
+            
+            if error:
+                alert_msg = (
+                    f"🚨 <b>STARS PURCHASE ERROR!</b>\n\n"
+                    f"🆔 <b>Invoice:</b> <code>{invoice_id}</code>\n"
+                    f"❌ <b>Error:</b> {error}\n\n"
+                    f"⚠️ <i>Fulfill the order manually!</i>"
+                )
+                send_telegram(alert_msg)
+                return "Error processing stars via API.", 200
+
+            success_msg = (
+                f"🛒 <b>SUCCESSFUL TELEGRAM STARS ORDER!</b>\n\n"
+                f"🆔 <b>Invoice:</b> <code>{invoice_id}</code>\n"
+                f"⭐ <b>Details:</b> {issued_result}"
+            )
+            send_telegram(success_msg)
+            return issued_result, 200
+
+        # --- OLD LOGIC (Gift cards / Game keys) ---
+        product_type = "gift_card"
+        id_1 = None
+        id_2 = None
+        extra_data = {}
+
+        if "pubg" in name_lower or "uc" in name_lower:
             id_1 = "pubg_mobile"
             numbers = re.findall(r'\d+', product_name)
             uc_count = numbers[0] if numbers else "60"
