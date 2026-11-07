@@ -9,7 +9,7 @@ app.url_map.strict_slashes = False
 
 # --- CONFIGURATION ---
 # Шукаєш цей рядок на початку main.py:
-TELEGRAM_BOT_TOKEN = "8457750011:AAFsAPqWSp4eyv57IcET6Zkys59MkrRm0L0"
+TELEGRAM_BOT_TOKEN = "9030923274:AAHoLPCafZSZ-WrTi6kZr1vEDQtrjueNgPg"
 TELEGRAM_CHAT_ID = "8508676381"
 RESELL_CODES_API_KEY = "rsc_live_b61d7b4894461371f7ed9b636752c35ac703a6d5c4625cda"
 RSC_BASE_URL = "https://resell.codes/api/v1"
