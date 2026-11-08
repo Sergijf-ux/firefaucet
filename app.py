@@ -341,19 +341,31 @@ def digiseller_webhook():
             if code_err:
                 print(f"Warning/Error checking unique code {unique_code}: {code_err}")
 
-        buyer_username = merged.get('param') or merged.get('username') or merged.get('account') or 'durov'
-        buyer_username = buyer_username.replace('@', '').strip()
-
         name_lower = product_name.lower()
         success = False
         issued_result = None
 
         if "premium" in name_lower or "премиум" in name_lower:
-            months = 3
-            if "6" in name_lower:
+            # Зчитуємо місяці з параметрів кнопок вибору або назви
+            raw_param = str(merged.get('Срок подписки') or merged.get('Subscription period') or merged.get('param') or '')
+            if '6' in raw_param:
                 months = 6
-            elif "12" in name_lower or "год" in name_lower or "рік" in name_lower:
+            elif '12' in raw_param or 'год' in raw_param or 'рік' in raw_param or '12 months' in raw_param.lower():
                 months = 12
+            else:
+                months = 3
+
+            # Зчитуємо юзернейм з текстового поля
+            buyer_username = (
+                merged.get('Укажите ваш @username') or 
+                merged.get('Enter your @username') or 
+                merged.get('username') or 
+                merged.get('account') or 
+                merged.get('param2') or 
+                merged.get('param') or 
+                'durov'
+            )
+            buyer_username = str(buyer_username).replace('@', '').strip()
 
             send_telegram(f"💎 <b>New Telegram Premium order!</b>\nInvoice: <code>{invoice_id}</code>\nUsername: @{buyer_username}\nMonths: {months}\nProcessing via API...")
             
@@ -364,6 +376,17 @@ def digiseller_webhook():
                 send_telegram(f"🚨 <b>PREMIUM PURCHASE ERROR!</b>\nInvoice: <code>{invoice_id}</code>\nError: {error}")
 
         elif "stars" in name_lower or "зірки" in name_lower or "звезд" in name_lower:
+            buyer_username = (
+                merged.get('Укажите ваш @username') or 
+                merged.get('Enter your @username') or 
+                merged.get('username') or 
+                merged.get('account') or 
+                merged.get('param2') or 
+                merged.get('param') or 
+                'durov'
+            )
+            buyer_username = str(buyer_username).replace('@', '').strip()
+
             numbers = re.findall(r'\d+', product_name)
             base_stars = int(numbers[0]) if numbers else 50
             total_stars = base_stars * quantity
@@ -422,7 +445,6 @@ if __name__ == '__main__':
     setup_telegram_webhook()
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
-
 
 
 
