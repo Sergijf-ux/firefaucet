@@ -11,9 +11,15 @@ app.url_map.strict_slashes = False
 TELEGRAM_BOT_TOKEN = "9030923274:AAHoLPCafZSZ-WrTi6kZr1vEDQtrjueNgPg"
 TELEGRAM_CHAT_ID = "8508676381"
 RESELL_CODES_API_KEY = "rsc_live_b61d7b4894461371f7ed9b636752c35ac703a6d5c4625cda"
+DIGISELLER_API_TOKEN = "A5CD7AE74E4846308F30A692510B6F9D"
 RSC_BASE_URL = "https://resell.codes/api/v1"
 
-TARGET_PRODUCT_ID = "6349263"
+ALLOWED_PRODUCT_IDS = [
+    "6375625",
+    "6370800",
+    "6359892",
+]
+
 RENDER_APP_URL = "https://digiseller-bot-2z5g.onrender.com"
 
 def send_telegram(text):
@@ -33,6 +39,44 @@ def setup_telegram_webhook():
         requests.get(url, timeout=10)
     except Exception as e:
         print(f"Auto-setup webhook error: {e}", flush=True)
+
+def verify_digiseller_unique_code(unique_code):
+    """Перевіряє унікальний код через API Digiseller (info)."""
+    url = "https://api.digiseller.com/api/v2/seller/uniques/info"
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+    }
+    params = {
+        "token": DIGISELLER_API_TOKEN,
+        "code": unique_code
+    }
+    try:
+        response = requests.get(url, params=params, headers=headers, timeout=10)
+        if response.status_code == 200:
+            return response.json(), None
+        return None, f"HTTP {response.status_code}: {response.text}"
+    except Exception as e:
+        return None, f"Connection error: {e}"
+
+def set_digiseller_code_delivered(unique_code):
+    """Переводить статус унікального коду в «товар доставлен» (sold)."""
+    url = "https://api.digiseller.com/api/v2/seller/uniques/sold"
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "token": DIGISELLER_API_TOKEN,
+        "code": unique_code
+    }
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        if response.status_code == 200:
+            return True, None
+        return False, f"HTTP {response.status_code}: {response.text}"
+    except Exception as e:
+        return False, f"Connection error: {e}"
 
 def get_rsc_telegram_stars_pricing():
     headers = {
@@ -130,9 +174,7 @@ def execute_rsc_purchase(product_type, id_1, id_2, quantity=1, extra_data=None):
 
     return None, "Order execution timeout (Polling timeout)"
 
-# --- ADDED: Telegram Stars & Premium Direct Purchase Functions ---
 def execute_rsc_telegram_stars_order(username, quantity):
-    """Виконує пряму покупку Telegram Stars через /telegram/stars/buy[cite: 3]"""
     headers = {
         "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
         "Content-Type": "application/json",
@@ -176,7 +218,6 @@ def execute_rsc_telegram_stars_order(username, quantity):
     return None, "Order execution timeout (Polling timeout)"
 
 def execute_rsc_telegram_premium_order(username, months):
-    """Виконує пряму покупку Telegram Premium через /telegram/premium/buy[cite: 6]"""
     headers = {
         "Authorization": f"Bearer {RESELL_CODES_API_KEY}",
         "Content-Type": "application/json",
@@ -218,11 +259,10 @@ def execute_rsc_telegram_premium_order(username, months):
             return None, f"Order canceled/refunded. Reason: {fail_reason} ({reason_text})"
 
     return None, "Order execution timeout (Polling timeout)"
-# -------------------------------------------------------------
 
 @app.route('/')
 def home():
-    return "Digiseller-RSC Dynamic Gift Code Integration Service is running successfully!", 200
+    return "Digiseller-RSC Dynamic Unique Code Integration Service is running successfully!", 200
 
 @app.route('/telegram-webhook', methods=['POST'])
 def telegram_webhook():
@@ -282,6 +322,9 @@ def digiseller_webhook():
         product_id = str(merged.get('ID_G') or merged.get('id_g') or merged.get('ID_I') or merged.get('id_i') or merged.get('inv_id') or merged.get('order_id') or '')
         invoice_id = merged.get('ID_I') or merged.get('id_i') or merged.get('inv_id') or merged.get('order_id') or 'UNKNOWN'
         product_name = merged.get('name') or merged.get('goods_name') or ''
+        
+        # Отримуємо унікальний код від Digiseller
+        unique_code = merged.get('unique_code') or merged.get('code') or merged.get('uniquecode') or ''
 
         raw_qty = merged.get('cnt') or merged.get('quantity') or merged.get('amount_goods') or 1
         try:
@@ -289,16 +332,22 @@ def digiseller_webhook():
         except ValueError:
             quantity = 1
 
-        if product_id and product_id != TARGET_PRODUCT_ID:
-            return jsonify({"status": "ignored", "reason": "Wrong product ID"}), 200
+        if product_id and product_id not in ALLOWED_PRODUCT_IDS:
+            return jsonify({"status": "ignored", "reason": f"Wrong product ID: {product_id}"}), 200
 
-        # Витягуємо юзернейм покупця з полів Digiseller (param / username / account)
+        # Перевірка унікального коду через Digiseller API (опціонально перед обробкою)
+        if unique_code:
+            code_info, code_err = verify_digiseller_unique_code(unique_code)
+            if code_err:
+                print(f"Warning/Error checking unique code {unique_code}: {code_err}")
+
         buyer_username = merged.get('param') or merged.get('username') or merged.get('account') or 'durov'
         buyer_username = buyer_username.replace('@', '').strip()
 
         name_lower = product_name.lower()
-        
-        # --- ADDED: Handle Telegram Premium Direct Order ---
+        success = False
+        issued_result = None
+
         if "premium" in name_lower or "премиум" in name_lower:
             months = 3
             if "6" in name_lower:
@@ -309,26 +358,11 @@ def digiseller_webhook():
             send_telegram(f"💎 <b>New Telegram Premium order!</b>\nInvoice: <code>{invoice_id}</code>\nUsername: @{buyer_username}\nMonths: {months}\nProcessing via API...")
             
             issued_result, error = execute_rsc_telegram_premium_order(buyer_username, months)
-            
-            if error:
-                alert_msg = (
-                    f"🚨 <b>PREMIUM PURCHASE ERROR!</b>\n\n"
-                    f"🆔 <b>Invoice:</b> <code>{invoice_id}</code>\n"
-                    f"❌ <b>Error:</b> {error}\n\n"
-                    f"⚠️ <i>Fulfill the order manually!</i>"
-                )
-                send_telegram(alert_msg)
-                return "Error processing premium via API.", 200
+            if not error:
+                success = True
+            else:
+                send_telegram(f"🚨 <b>PREMIUM PURCHASE ERROR!</b>\nInvoice: <code>{invoice_id}</code>\nError: {error}")
 
-            success_msg = (
-                f"🛒 <b>SUCCESSFUL TELEGRAM PREMIUM ORDER!</b>\n\n"
-                f"🆔 <b>Invoice:</b> <code>{invoice_id}</code>\n"
-                f"💎 <b>Details:</b> {issued_result}"
-            )
-            send_telegram(success_msg)
-            return issued_result, 200
-
-        # --- ADDED: Handle Telegram Stars Direct Order ---
         elif "stars" in name_lower or "зірки" in name_lower or "звезд" in name_lower:
             numbers = re.findall(r'\d+', product_name)
             base_stars = int(numbers[0]) if numbers else 50
@@ -337,92 +371,52 @@ def digiseller_webhook():
             send_telegram(f"⭐ <b>New Telegram Stars order!</b>\nInvoice: <code>{invoice_id}</code>\nUsername: @{buyer_username}\nStars: {total_stars}\nProcessing via API...")
             
             issued_result, error = execute_rsc_telegram_stars_order(buyer_username, total_stars)
-            
-            if error:
-                alert_msg = (
-                    f"🚨 <b>STARS PURCHASE ERROR!</b>\n\n"
-                    f"🆔 <b>Invoice:</b> <code>{invoice_id}</code>\n"
-                    f"❌ <b>Error:</b> {error}\n\n"
-                    f"⚠️ <i>Fulfill the order manually!</i>"
-                )
-                send_telegram(alert_msg)
-                return "Error processing stars via API.", 200
+            if not error:
+                success = True
+            else:
+                send_telegram(f"🚨 <b>STARS PURCHASE ERROR!</b>\nInvoice: <code>{invoice_id}</code>\nError: {error}")
 
-            success_msg = (
-                f"🛒 <b>SUCCESSFUL TELEGRAM STARS ORDER!</b>\n\n"
-                f"🆔 <b>Invoice:</b> <code>{invoice_id}</code>\n"
-                f"⭐ <b>Details:</b> {issued_result}"
-            )
-            send_telegram(success_msg)
-            return issued_result, 200
-
-        # --- OLD LOGIC (Gift cards / Game keys) ---
-        product_type = "gift_card"
-        id_1 = None
-        id_2 = None
-        extra_data = {}
-
-        if "pubg" in name_lower or "uc" in name_lower:
-            id_1 = "pubg_mobile"
-            numbers = re.findall(r'\d+', product_name)
-            uc_count = numbers[0] if numbers else "60"
-            
-            catalog = get_rsc_gift_cards_catalog(id_1)
-            id_2 = f"{uc_count}_uc"
-            if catalog:
-                cards_list = catalog if isinstance(catalog, list) else catalog.get("offers", [])
-                for card in cards_list:
-                    c_id = str(card.get("card_id", ""))
-                    if uc_count in c_id:
-                        id_2 = card.get("card_id")
-                        break
-
-        elif "robux" in name_lower or "roblox" in name_lower:
-            id_1 = "roblox_global"
-            numbers = re.findall(r'\d+', product_name)
-            robux_count = numbers[0] if numbers else "50"
-            
-            catalog = get_rsc_gift_cards_catalog(id_1)
-            id_2 = f"{robux_count}_robux"
-            if catalog:
-                cards_list = catalog if isinstance(catalog, list) else catalog.get("offers", [])
-                for card in cards_list:
-                    c_id = str(card.get("card_id", ""))
-                    if robux_count in c_id:
-                        id_2 = card.get("card_id")
-                        break
         else:
+            product_type = "gift_card"
             id_1 = "telegram_stars"
             id_2 = "50_stars"
 
-        send_telegram(f"📥 <b>New order received!</b>\nInvoice: <code>{invoice_id}</code>\nProduct: {product_name}\nQty: {quantity}\nResolved card_id: <code>{id_2}</code>\nPurchasing Gift Code...")
+            send_telegram(f"📥 <b>New order received!</b>\nInvoice: <code>{invoice_id}</code>\nProduct: {product_name}\nQty: {quantity}\nPurchasing Gift Code...")
+            issued_result, error = execute_rsc_purchase(product_type, id_1, id_2, quantity)
+            if not error:
+                success = True
+            else:
+                send_telegram(f"🚨 <b>GIFT CODE PURCHASE ERROR!</b>\nInvoice: <code>{invoice_id}</code>\nError: {error}")
 
-        issued_keys, error = execute_rsc_purchase(product_type, id_1, id_2, quantity, extra_data=extra_data)
+        # Якщо поповнення успішне — закриваємо унікальний код в Digiseller та повертаємо retval: 0
+        if success:
+            if unique_code:
+                set_digiseller_code_delivered(unique_code)
 
-        if error:
-            alert_msg = (
-                f"🚨 <b>AUTOMATED PURCHASE ERROR!</b>\n\n"
+            success_msg = (
+                f"🛒 <b>SUCCESSFUL AUTO-ORDER!</b>\n\n"
                 f"🆔 <b>Invoice:</b> <code>{invoice_id}</code>\n"
-                f"📦 <b>Product:</b> {product_name}\n"
-                f"❌ <b>Error:</b> {error}\n\n"
-                f"⚠️ <i>Fulfill the order manually!</i>"
+                f"📌 <b>Details:</b> {issued_result}"
             )
-            send_telegram(alert_msg)
-            return "Error processing order via API. Manual fulfillment required.", 200
+            send_telegram(success_msg)
 
-        success_msg = (
-            f"🛒 <b>SUCCESSFUL AUTO-ORDER (GIFT CODE)!</b>\n\n"
-            f"🆔 <b>Digiseller Invoice:</b> <code>{invoice_id}</code>\n"
-            f"🔑 <b>Issued Code:</b>\n<code>{issued_keys}</code>"
-        )
-        send_telegram(success_msg)
-        
-        return issued_keys, 200
+            return jsonify({
+                "retval": 0,
+                "returntext": f"Замовлення успішно опрацьовано! Деталі: {issued_result}"
+            }), 200
+        else:
+            return jsonify({
+                "retval": 1,
+                "returntext": "Помилка автоматичного поповнення. Зверніться до підтримки з унікальним кодом."
+            }), 200
 
     except Exception as e:
         print(f"Webhook internal exception: {e}", flush=True)
         send_telegram(f"🔥 <b>Server internal error:</b> {str(e)}")
-        return "INTERNAL ERROR", 500
+        return jsonify({
+            "retval": 1,
+            "returntext": "Internal server error."
+        }), 500
 
 if __name__ == '__main__':
     setup_telegram_webhook()
