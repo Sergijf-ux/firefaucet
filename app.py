@@ -279,29 +279,31 @@ def telegram_webhook():
             pubg_data = get_rsc_gift_cards_catalog("pubg_mobile")
             roblox_data = get_rsc_gift_cards_catalog("roblox_global")
             
-            price_msg = "📊 <b>Повний прайс ReSellCodes (RSC):</b>\n\n"
+            # Частина 1: Зірки, Преміум, PUBG Mobile (без обмежень по кількості)
+            msg_1 = "📊 <b>Повний прайс ReSellCodes (RSC) [1/2]:</b>\n\n"
             
             if stars_data:
-                price_msg += f"⭐ <b>Telegram Stars:</b>\n• За 1 зірку: <code>${stars_data.get('price_per_star', 'N/A')}</code>\n\n"
+                msg_1 += f"⭐ <b>Telegram Stars:</b>\n• За 1 зірку: <code>${stars_data.get('price_per_star', 'N/A')}</code>\n\n"
             
             if prem_data and "plans" in prem_data:
-                price_msg += "💎 <b>Telegram Premium:</b>\n"
+                msg_1 += "💎 <b>Telegram Premium:</b>\n"
                 for plan in prem_data["plans"]:
-                    price_msg += f"• {plan.get('months')} міс: <code>${plan.get('price_usd')}</code>\n"
-                price_msg += "\n"
+                    msg_1 += f"• {plan.get('months')} міс: <code>${plan.get('price_usd')}</code>\n"
+                msg_1 += "\n"
 
             if pubg_data and isinstance(pubg_data, dict) and "offers" in pubg_data:
-                price_msg += "🎯 <b>PUBG Mobile UC:</b>\n"
-                for offer in pubg_data["offers"][:6]:
-                    price_msg += f"• {offer.get('name', offer.get('card_id'))}: <code>${offer.get('price_usd')}</code>\n"
-                price_msg += "\n"
+                msg_1 += "🎯 <b>PUBG Mobile UC:</b>\n"
+                for offer in pubg_data["offers"]:
+                    msg_1 += f"• {offer.get('name', offer.get('card_id'))}: <code>${offer.get('price_usd')}</code>\n"
 
+            send_telegram(msg_1)
+
+            # Частина 2: Roblox Robux
             if roblox_data and isinstance(roblox_data, dict) and "offers" in roblox_data:
-                price_msg += "🧱 <b>Roblox Robux:</b>\n"
-                for offer in roblox_data["offers"][:6]:
-                    price_msg += f"• {offer.get('name', offer.get('card_id'))}: <code>${offer.get('price_usd')}</code>\n"
-            
-            send_telegram(price_msg)
+                msg_2 = "🧱 <b>Roblox Robux [2/2]:</b>\n"
+                for offer in roblox_data["offers"]:
+                    msg_2 += f"• {offer.get('name', offer.get('card_id'))}: <code>${offer.get('price_usd')}</code>\n"
+                send_telegram(msg_2)
 
         return jsonify({"status": "ok"}), 200
     except Exception as e:
@@ -323,7 +325,6 @@ def digiseller_webhook():
         invoice_id = merged.get('ID_I') or merged.get('id_i') or merged.get('inv_id') or merged.get('order_id') or 'UNKNOWN'
         product_name = merged.get('name') or merged.get('goods_name') or ''
         
-        # Отримуємо унікальний код від Digiseller
         unique_code = merged.get('unique_code') or merged.get('code') or merged.get('uniquecode') or ''
 
         raw_qty = merged.get('cnt') or merged.get('quantity') or merged.get('amount_goods') or 1
@@ -335,7 +336,6 @@ def digiseller_webhook():
         if product_id and product_id not in ALLOWED_PRODUCT_IDS:
             return jsonify({"status": "ignored", "reason": f"Wrong product ID: {product_id}"}), 200
 
-        # Перевірка унікального коду через Digiseller API (опціонально перед обробкою)
         if unique_code:
             code_info, code_err = verify_digiseller_unique_code(unique_code)
             if code_err:
@@ -346,7 +346,6 @@ def digiseller_webhook():
         issued_result = None
 
         if "premium" in name_lower or "премиум" in name_lower:
-            # Зчитуємо місяці з параметрів кнопок вибору або назви
             raw_param = str(merged.get('Срок подписки') or merged.get('Subscription period') or merged.get('param') or '')
             if '6' in raw_param:
                 months = 6
@@ -355,7 +354,6 @@ def digiseller_webhook():
             else:
                 months = 3
 
-            # Зчитуємо юзернейм з текстового поля
             buyer_username = (
                 merged.get('Укажите ваш @username') or 
                 merged.get('Enter your @username') or 
@@ -411,7 +409,6 @@ def digiseller_webhook():
             else:
                 send_telegram(f"🚨 <b>GIFT CODE PURCHASE ERROR!</b>\nInvoice: <code>{invoice_id}</code>\nError: {error}")
 
-        # Якщо поповнення успішне — закриваємо унікальний код в Digiseller та повертаємо retval: 0
         if success:
             if unique_code:
                 set_digiseller_code_delivered(unique_code)
