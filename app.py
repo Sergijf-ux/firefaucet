@@ -182,14 +182,13 @@ def verify_telegram_request():
 # ---------------- DIGISELLER ----------------
 
 def verify_digiseller_unique_code(unique_code):
-    url = "https://api.digiseller.com/api/v2/seller/uniques/info"
+    url = f"https://api.digiseller.com/api/v2/seller/uniques/{unique_code}"
 
     try:
         response = requests.get(
             url,
             params={
-                "token": DIGISELLER_API_TOKEN,
-                "code": unique_code
+                "token": DIGISELLER_API_TOKEN
             },
             headers={"Accept": "application/json"},
             timeout=REQUEST_TIMEOUT
