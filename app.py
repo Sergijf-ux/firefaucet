@@ -6,7 +6,6 @@ import sqlite3
 import html
 import logging
 import requests
-
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
